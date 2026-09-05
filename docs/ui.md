@@ -73,9 +73,14 @@ An inbox row is the same shape with the reason (`review requested`, `mention`, `
 - **Labels** — the chips from the row.
 - **Body** — markdown at the transcript measure (`TextView::markdown`).
 - **Comments** — a hairline, then each comment as avatar initial, login, age, and its markdown body.
-- **Footer** — *Open on GitHub*, which opens the browser; every item is one click from the real thing.
+- **Tabs** — for a pull only: *Conversation* and *Files n*, as chips under the header. Files lists each file as a one-letter status mark (A/M/D/R in the status colours), the path in mono, and `+n −m`; picking one opens its diff under it, and only one is open at a time. The diff is line-numbered both sides, in mono at 12 px, with added and removed lines tinted by `status.done` and `status.error` at 12 % and hunk headers on `code.bg`; long lines scroll sideways inside the box rather than wrapping the column.
+- **Footer** — *Open on GitHub*, in the right strip, which opens the browser; every item is one click from the real thing.
 
 Empty state: *Pick something to read* over the glass.
+
+### 3.5 Sign-in screen
+
+What the centre column is when there is no token: the GitHub mark, *Sign in to GitHub*, one sentence on what the app reads, and one filled button. Pressing it swaps the button for the device code in mono at 24 px inside a card, the address to enter it at, *Open in browser* (which also copies the code) and *Copy code*, and a quiet *Waiting for GitHub…* line. A refusal or an expiry is one sentence in `status.error` with *Try again*. Signing out is the small mark beside the login in the sidebar footer.
 
 ## 4. Component mapping
 

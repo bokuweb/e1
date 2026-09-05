@@ -142,3 +142,66 @@ error.failed:
 time.now:
   en: now
   ja: 今
+
+detail.tab.conversation:
+  en: Conversation
+  ja: 会話
+detail.tab.files:
+  en: "Files"
+  ja: "ファイル"
+detail.files.loading:
+  en: Loading files…
+  ja: ファイルを読み込み中…
+detail.files.empty:
+  en: No files changed
+  ja: 変更されたファイルはありません
+detail.file.no_diff:
+  en: No diff to show for this file
+  ja: このファイルの差分は表示できません
+
+sidebar.sign_out:
+  en: Sign out
+  ja: サインアウト
+
+signin.title:
+  en: Sign in to GitHub
+  ja: GitHub にサインイン
+signin.lead:
+  en: e1 reads your inbox, pull requests and issues. Nothing is sent anywhere but GitHub.
+  ja: e1 は受信箱・プルリクエスト・Issue を読みます。GitHub 以外には何も送りません。
+signin.button:
+  en: Sign in with GitHub
+  ja: GitHub でサインイン
+signin.hint:
+  en: "Or set GITHUB_TOKEN, or run `gh auth login`, and start e1 again."
+  ja: "または GITHUB_TOKEN を設定するか `gh auth login` を実行して、e1 を再起動してください。"
+signin.no_client_id:
+  en: "Signing in from the window needs an OAuth app: set E1_GITHUB_CLIENT_ID to its client id, with the device flow enabled."
+  ja: "ウィンドウからのサインインには OAuth App が必要です。Device Flow を有効にした App の client id を E1_GITHUB_CLIENT_ID に設定してください。"
+signin.starting:
+  en: Asking GitHub for a code…
+  ja: GitHub にコードを要求中…
+signin.enter_code:
+  en: Enter this code at
+  ja: このコードを次のページで入力してください
+signin.open:
+  en: Open in browser
+  ja: ブラウザで開く
+signin.copy:
+  en: Copy code
+  ja: コードをコピー
+signin.copied:
+  en: Copied
+  ja: コピーしました
+signin.waiting:
+  en: Waiting for GitHub…
+  ja: GitHub を待っています…
+signin.denied:
+  en: GitHub said no. Try again when you are ready.
+  ja: GitHub に拒否されました。準備ができたらもう一度お試しください。
+signin.expired:
+  en: The code expired. Ask for a new one.
+  ja: コードの有効期限が切れました。新しいコードを要求してください。
+signin.retry:
+  en: Try again
+  ja: もう一度

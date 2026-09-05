@@ -31,6 +31,7 @@ struct Data {
     items: Vec<Item>,
     pulls: HashMap<(RepoId, u64), PullExtra>,
     comments: HashMap<(RepoId, u64), Vec<Comment>>,
+    files: HashMap<(RepoId, u64), Vec<PullFile>>,
     /// When set, every call fails with this. For testing the error states.
     failing: Option<String>,
 }
@@ -105,6 +106,16 @@ impl Scripted {
             .unwrap()
             .comments
             .insert((repo.clone(), number), comments);
+        self
+    }
+
+    /// The files a pull changes.
+    pub fn with_files(self, repo: &RepoId, number: u64, files: Vec<PullFile>) -> Self {
+        self.data
+            .lock()
+            .unwrap()
+            .files
+            .insert((repo.clone(), number), files);
         self
     }
 
@@ -193,6 +204,16 @@ impl Scripted {
             body: body.to_string(),
             html_url: String::new(),
         };
+        let file =
+            |name: &str, status: FileStatus, adds: u64, dels: u64, patch: Option<&str>| PullFile {
+                filename: name.to_string(),
+                previous_filename: None,
+                status,
+                additions: adds,
+                deletions: dels,
+                patch: patch.map(str::to_string),
+            };
+        let patch = "@@ -1,6 +1,9 @@\n use gpui::*;\n \n-fn open(cx: &mut App) {\n-    let bounds = Bounds::centered(None, size(px(1440.), px(920.)), cx);\n+/// Open the window where the reader left it, or centred the first time.\n+fn open(cx: &mut App, remembered: Option<Bounds<Pixels>>) {\n+    let bounds = remembered\n+        .unwrap_or_else(|| Bounds::centered(None, size(px(1440.), px(920.)), cx));\n     cx.open_window(bounds, |window, cx| shell(window, cx))\n }\n@@ -20,3 +23,4 @@ impl Shell {\n     fn persist(&mut self) {\n         self.layout.write_into(&mut self.settings);\n+        self.settings.bounds = Some(self.bounds);\n     }";
         let repo = |id: &RepoId, description: &str, private: bool, hours: i64| Repo {
             id: id.clone(),
             description: Some(description.to_string()),
@@ -248,6 +269,16 @@ impl Scripted {
                 comment(2, "alice", 2, "Not yet — I'd rather land this and do the cleanup in the archive change, since that is where the rule lives.\n\n```rust\nfn archive(&mut self) { /* … */ }\n```"),
             ])
             .with_comments(&e1, 3, vec![comment(3, "bokuweb", 4, "Reproduced. `cx.activate(true)` after the window opens fixes it.")])
+            .with_files(&e1, 6, vec![
+                file("src/main.rs", FileStatus::Modified, 6, 2, Some(patch)),
+                file("crates/e1-ui/src/settings.rs", FileStatus::Modified, 1, 0, Some("@@ -18,4 +18,5 @@ pub struct AppSettings {\n     pub right_panel_width: f32,\n+    pub bounds: Option<WindowBounds>,\n     pub locale: Option<String>,\n     pub last_repo: Option<String>,\n }")),
+                file("assets/icons/window.svg", FileStatus::Added, 0, 0, None),
+            ])
+            .with_files(&ginka, 12, vec![
+                file("src/shell.rs", FileStatus::Modified, 300, 30, Some(patch)),
+                file("crates/ginka-core/src/project.rs", FileStatus::Modified, 80, 8, Some("@@ -1,3 +1,4 @@\n+//! Projects, and the scratch one a chat starts in.\n use std::path::PathBuf;\n \n pub struct Project {")),
+                file("docs/ui.md", FileStatus::Modified, 32, 0, Some("@@ -40,2 +40,3 @@\n ## 3. Regions\n+A chat can start before it has a workspace.\n ")),
+            ])
             .with_notification(Notification {
                 id: "1".into(),
                 unread: true,
@@ -456,6 +487,15 @@ impl GitHub for Scripted {
             .cloned()
             .unwrap_or_default())
     }
+
+    fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>> {
+        Ok(self
+            .guard()?
+            .files
+            .get(&(repo.clone(), number))
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +531,9 @@ mod tests {
         let pull = github.pull(&RepoId::new("bokuweb", "ginka"), 12).unwrap();
         assert_eq!(pull.changed_files, 9);
         assert_eq!(github.comments(&pull.item.repo, 12).unwrap().len(), 2);
+        let files = github.pull_files(&pull.item.repo, 12).unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files[0].patch.is_some());
     }
 
     #[test]

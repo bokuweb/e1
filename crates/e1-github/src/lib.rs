@@ -12,7 +12,7 @@ pub mod rest;
 pub mod scripted;
 mod wire;
 
-pub use auth::Token;
+pub use auth::{Source, Token};
 pub use model::*;
 pub use rest::Rest;
 pub use scripted::Scripted;
@@ -121,4 +121,12 @@ pub trait GitHub: Send + Sync {
     fn pull(&self, repo: &RepoId, number: u64) -> Result<Pull>;
     /// An item's comments, oldest first.
     fn comments(&self, repo: &RepoId, number: u64) -> Result<Vec<Comment>>;
+    /// The files a pull changes, with their diffs.
+    ///
+    /// Defaulted to [`Error::Unsupported`] so a host implementation that
+    /// lags behind the trait still compiles; the view draws that.
+    fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>> {
+        let _ = (repo, number);
+        Err(Error::Unsupported("list a pull's files"))
+    }
 }

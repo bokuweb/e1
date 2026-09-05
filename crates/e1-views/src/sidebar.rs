@@ -11,12 +11,15 @@ use e1_ui::assets::icon;
 use e1_ui::{Focus, Section, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, StyledExt as _, h_flex, v_flex};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 
 /// Emitted when the reader picks a row.
 pub enum SidebarEvent {
     /// Show this in the centre column.
     Focus(Focus),
+    /// Forget the token and go back to the sign-in screen.
+    SignOut,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -229,6 +232,7 @@ impl Sidebar {
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
         let viewer = self.store.read(cx).viewer().value().cloned();
+        let signed_in = viewer.is_some();
         let (initial, login): (SharedString, SharedString) = match viewer {
             Some(viewer) => (
                 viewer
@@ -267,11 +271,32 @@ impl Sidebar {
             )
             .child(
                 div()
+                    .flex_1()
                     .text_sm()
                     .text_color(tokens.colors().text_secondary)
                     .truncate()
                     .child(login),
             )
+            .when(signed_in, |this| {
+                this.child(
+                    div()
+                        .id("sign-out")
+                        .p_1()
+                        .rounded(px(tokens.radius.row))
+                        .cursor_pointer()
+                        .hover(|this| this.bg(tokens.colors().row_hover()))
+                        .tooltip(|window, cx| {
+                            Tooltip::new(rust_i18n::t!("sidebar.sign_out").to_string())
+                                .build(window, cx)
+                        })
+                        .child(
+                            Icon::new(IconName::CircleX)
+                                .size_3p5()
+                                .text_color(tokens.colors().text_muted),
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::SignOut))),
+                )
+            })
     }
 }
 

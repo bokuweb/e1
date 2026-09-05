@@ -8,7 +8,8 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 use anyhow::Result;
-use e1_github::{GitHub, Rest, Scripted};
+use e1_github::auth::Source;
+use e1_github::{GitHub, RepoId, Rest, Scripted};
 use e1_ui::settings::{self, AppSettings};
 use e1_ui::{Mode, Paths};
 use gpui::{
@@ -18,24 +19,40 @@ use gpui::{
 use gpui_component::Root;
 use std::sync::Arc;
 
-/// Where the window's data comes from.
+/// Where the window's data comes from, and where its token came from.
 ///
 /// `E1_DEMO=1` runs over scripted data with no network at all. Otherwise the
-/// token is discovered; without one the window still opens, over an empty
-/// source whose every answer says how to sign in — a window that refuses to
-/// open cannot tell the reader what to do about it.
-fn source() -> Arc<dyn GitHub> {
+/// token is discovered; without one the window still opens, on the sign-in
+/// screen — a window that refuses to open cannot tell the reader what to do
+/// about it.
+fn source() -> (Option<Arc<dyn GitHub>>, Option<Source>) {
     if std::env::var_os("E1_DEMO").is_some_and(|value| value == "1") {
         tracing::info!("running over scripted data");
-        return Arc::new(Scripted::sample());
+        return (Some(Arc::new(Scripted::sample())), None);
     }
     match e1_github::auth::discover() {
-        Some(token) => Arc::new(Rest::new(token)),
+        Some((token, source)) => {
+            tracing::info!(?source, "token found");
+            (Some(Arc::new(Rest::new(token))), Some(source))
+        }
         None => {
-            tracing::warn!("no GitHub token was found");
-            Arc::new(Scripted::empty())
+            tracing::warn!("no GitHub token was found; opening on the sign-in screen");
+            (None, None)
         }
     }
+}
+
+/// `E1_DEMO_OPEN=owner/name#12:src/main.rs`: an item to open, on its files,
+/// with one of them expanded, as soon as the window is up. The path is
+/// optional. For screenshots; see `Shell::open_at_launch`.
+fn open_at_launch() -> Option<((RepoId, u64), Option<String>)> {
+    let value = std::env::var("E1_DEMO_OPEN").ok()?;
+    let (item, file) = match value.split_once(':') {
+        Some((item, file)) => (item, Some(file.to_string())),
+        None => (value.as_str(), None),
+    };
+    let (repo, number) = item.split_once('#')?;
+    Some(((RepoId::parse(repo)?, number.parse().ok()?), file))
 }
 
 fn main() -> Result<()> {
@@ -45,7 +62,7 @@ fn main() -> Result<()> {
     let app_settings: AppSettings = settings::load(&paths.app_settings());
     let locale = e1_ui::i18n::init(app_settings.locale.as_deref());
     tracing::info!(%locale, "language");
-    let github = source();
+    let (github, token_source) = source();
     let shell_paths = paths.clone();
 
     let application = gpui_platform::application().with_assets(e1_ui::Assets);
@@ -80,9 +97,21 @@ fn main() -> Result<()> {
                 WindowBounds::Windowed(Bounds::centered(None, size(px(1440.), px(920.)), cx))
             }));
 
+            let open_at_launch = open_at_launch();
             cx.open_window(options, |window, cx| {
-                let shell = cx
-                    .new(|cx| e1_views::Shell::new(github, shell_paths, app_settings, window, cx));
+                let shell = cx.new(|cx| {
+                    e1_views::Shell::new(
+                        github,
+                        token_source,
+                        shell_paths,
+                        app_settings,
+                        window,
+                        cx,
+                    )
+                });
+                if let Some((key, file)) = open_at_launch {
+                    shell.update(cx, |shell, cx| shell.open_at_launch(key, file, cx));
+                }
                 cx.new(|cx| Root::new(shell, window, cx))
             })
             .expect("failed to open the main window");
