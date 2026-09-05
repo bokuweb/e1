@@ -1,0 +1,144 @@
+# Every user-visible string in e1, in both languages it ships with.
+#
+# `_version: 2` keeps the languages side by side so a missing translation is
+# visible in review rather than in a running window. Keys are namespaced by
+# the region of the UI they belong to.
+_version: 2
+
+app.name:
+  en: e1
+  ja: e1
+app.signed_out:
+  en: not signed in
+  ja: 未ログイン
+
+sidebar.inbox:
+  en: Inbox
+  ja: 受信箱
+sidebar.my_pulls:
+  en: My pulls
+  ja: 自分のPR
+sidebar.reviews:
+  en: Reviews
+  ja: レビュー依頼
+sidebar.assigned:
+  en: Assigned
+  ja: 担当のIssue
+sidebar.repositories:
+  en: Repositories
+  ja: リポジトリ
+sidebar.repositories.empty:
+  en: No repositories yet
+  ja: リポジトリはありません
+
+list.pulls:
+  en: Pull requests
+  ja: プルリクエスト
+list.issues:
+  en: Issues
+  ja: Issue
+list.open:
+  en: Open
+  ja: オープン
+list.closed:
+  en: Closed
+  ja: クローズ
+list.empty:
+  en: Nothing here
+  ja: 何もありません
+list.loading:
+  en: Loading…
+  ja: 読み込み中…
+list.pick:
+  en: Pick something on the left
+  ja: 左から選んでください
+list.comments:
+  en: "%{count} comments"
+  ja: "%{count} 件のコメント"
+list.refresh:
+  en: Refresh
+  ja: 更新
+
+inbox.reason.review_requested:
+  en: review requested
+  ja: レビュー依頼
+inbox.reason.mention:
+  en: mentioned you
+  ja: メンション
+inbox.reason.assign:
+  en: assigned to you
+  ja: 担当に指定
+inbox.reason.author:
+  en: you opened this
+  ja: 自分が作成
+inbox.reason.comment:
+  en: new comment
+  ja: 新しいコメント
+inbox.reason.subscribed:
+  en: subscribed
+  ja: 購読中
+inbox.reason.state_change:
+  en: state changed
+  ja: 状態が変わりました
+inbox.reason.ci_activity:
+  en: CI activity
+  ja: CI の結果
+inbox.reason.other:
+  en: updated
+  ja: 更新
+
+state.open:
+  en: Open
+  ja: オープン
+state.closed:
+  en: Closed
+  ja: クローズ
+state.merged:
+  en: Merged
+  ja: マージ済み
+state.draft:
+  en: Draft
+  ja: ドラフト
+
+detail.empty:
+  en: Pick something to read
+  ja: 読むものを選んでください
+detail.loading:
+  en: Loading…
+  ja: 読み込み中…
+detail.wants_to_merge:
+  en: "%{head} → %{base}"
+  ja: "%{head} → %{base}"
+detail.files:
+  en: "%{count} files"
+  ja: "%{count} ファイル"
+detail.comments:
+  en: Comments
+  ja: コメント
+detail.no_body:
+  en: No description provided.
+  ja: 説明はありません。
+detail.open_on_github:
+  en: Open on GitHub
+  ja: GitHub で開く
+
+panel.sidebar:
+  en: Sidebar
+  ja: サイドバー
+panel.right:
+  en: Details
+  ja: 詳細
+
+error.no_token:
+  en: "No GitHub token. Set E1_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login`."
+  ja: "GitHub トークンがありません。E1_GITHUB_TOKEN か GITHUB_TOKEN を設定するか、`gh auth login` を実行してください。"
+error.rate_limited:
+  en: "GitHub is rate limiting this token"
+  ja: "GitHub のレート制限中です"
+error.failed:
+  en: "Could not reach GitHub: %{detail}"
+  ja: "GitHub に接続できません: %{detail}"
+
+time.now:
+  en: now
+  ja: 今

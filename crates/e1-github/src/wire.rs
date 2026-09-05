@@ -1,0 +1,474 @@
+//! GitHub's JSON, and the mapping into the model.
+//!
+//! Private: the wire's shapes stop here. Every struct is what one endpoint
+//! sends, with only the fields this app reads, and the `into_*` methods are
+//! where the rules that are not on the wire are written — a merged pull is
+//! `closed` with `merged_at` set; an issues listing contains pulls; a search
+//! hit names its repository by URL.
+
+use crate::model::*;
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireUser {
+    pub login: String,
+    #[serde(default)]
+    pub avatar_url: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl From<WireUser> for User {
+    fn from(user: WireUser) -> Self {
+        Self {
+            login: user.login,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+impl From<WireUser> for Viewer {
+    fn from(user: WireUser) -> Self {
+        Self {
+            login: user.login,
+            name: user.name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireRepo {
+    pub full_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
+    pub default_branch: String,
+    #[serde(default)]
+    pub stargazers_count: u64,
+    #[serde(default)]
+    pub open_issues_count: u64,
+    #[serde(default)]
+    pub pushed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl WireRepo {
+    /// `None` when `full_name` is not `owner/name`, which would be a GitHub
+    /// bug; dropping the row beats keying a cache by garbage.
+    pub fn into_repo(self) -> Option<Repo> {
+        let id = RepoId::parse(&self.full_name)?;
+        Some(Repo {
+            id,
+            description: self.description.filter(|text| !text.is_empty()),
+            private: self.private,
+            default_branch: self.default_branch,
+            stars: self.stargazers_count,
+            open_issues: self.open_issues_count,
+            pushed_at: self.pushed_at,
+            html_url: self.html_url,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireLabel {
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+impl From<WireLabel> for Label {
+    fn from(label: WireLabel) -> Self {
+        Self {
+            name: label.name,
+            color: label.color,
+        }
+    }
+}
+
+/// The marker an issues listing or a search hit carries when the "issue" is
+/// a pull request.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WirePullMarker {
+    #[serde(default)]
+    pub merged_at: Option<DateTime<Utc>>,
+}
+
+/// An issue-shaped object: `/issues`, `/issues/{n}` and `/search/issues` all
+/// send this, for pulls as well as issues.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireIssue {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub user: WireUser,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub comments: Option<u64>,
+    #[serde(default)]
+    pub labels: Vec<WireLabel>,
+    #[serde(default)]
+    pub assignees: Vec<WireUser>,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub pull_request: Option<WirePullMarker>,
+    #[serde(default)]
+    pub draft: Option<bool>,
+    #[serde(default)]
+    pub repository_url: Option<String>,
+}
+
+impl WireIssue {
+    /// Whether this issue-shaped object is a pull request.
+    pub fn is_pull(&self) -> bool {
+        self.pull_request.is_some()
+    }
+
+    /// The repository, from `repository_url` when the endpoint sent one
+    /// (search does) and from the caller otherwise.
+    pub fn repo(&self, fallback: Option<&RepoId>) -> Option<RepoId> {
+        self.repository_url
+            .as_deref()
+            .and_then(RepoId::from_api_url)
+            .or_else(|| fallback.cloned())
+    }
+
+    /// Into the model. `None` when the repository cannot be named.
+    pub fn into_item(self, fallback: Option<&RepoId>) -> Option<Item> {
+        let repo = self.repo(fallback)?;
+        let kind = match &self.pull_request {
+            Some(marker) => Kind::Pull {
+                draft: self.draft.unwrap_or(false),
+                merged: marker.merged_at.is_some(),
+            },
+            None => Kind::Issue,
+        };
+        Some(Item {
+            repo,
+            number: self.number,
+            title: self.title,
+            kind,
+            status: parse_status(&self.state),
+            author: self.user.into(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            comments: self.comments,
+            labels: self.labels.into_iter().map(Into::into).collect(),
+            assignees: self.assignees.into_iter().map(Into::into).collect(),
+            requested_reviewers: Vec::new(),
+            html_url: self.html_url,
+            body: self.body.unwrap_or_default(),
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireRef {
+    #[serde(rename = "ref")]
+    pub name: String,
+}
+
+/// What `/pulls` and `/pulls/{n}` send. The listing omits the counts.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WirePull {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub merged_at: Option<DateTime<Utc>>,
+    pub user: WireUser,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub head: WireRef,
+    pub base: WireRef,
+    #[serde(default)]
+    pub labels: Vec<WireLabel>,
+    #[serde(default)]
+    pub assignees: Vec<WireUser>,
+    #[serde(default)]
+    pub requested_reviewers: Vec<WireUser>,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub comments: Option<u64>,
+    #[serde(default)]
+    pub additions: Option<u64>,
+    #[serde(default)]
+    pub deletions: Option<u64>,
+    #[serde(default)]
+    pub changed_files: Option<u64>,
+    #[serde(default)]
+    pub mergeable: Option<bool>,
+}
+
+impl WirePull {
+    /// The shared part.
+    pub fn into_item(self, repo: &RepoId) -> Item {
+        Item {
+            repo: repo.clone(),
+            number: self.number,
+            title: self.title,
+            kind: Kind::Pull {
+                draft: self.draft,
+                merged: self.merged_at.is_some(),
+            },
+            status: parse_status(&self.state),
+            author: self.user.into(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            comments: self.comments,
+            labels: self.labels.into_iter().map(Into::into).collect(),
+            assignees: self.assignees.into_iter().map(Into::into).collect(),
+            requested_reviewers: self
+                .requested_reviewers
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            html_url: self.html_url,
+            body: self.body.unwrap_or_default(),
+        }
+    }
+
+    /// The whole pull. The counts default to zero when the listing omitted
+    /// them; a caller wanting them asks for the pull by number.
+    pub fn into_pull(self, repo: &RepoId) -> Pull {
+        let head = self.head.name.clone();
+        let base = self.base.name.clone();
+        let additions = self.additions.unwrap_or(0);
+        let deletions = self.deletions.unwrap_or(0);
+        let changed_files = self.changed_files.unwrap_or(0);
+        let mergeable = self.mergeable;
+        Pull {
+            item: self.into_item(repo),
+            head,
+            base,
+            additions,
+            deletions,
+            changed_files,
+            mergeable,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireSubject {
+    pub title: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireRepoRef {
+    pub full_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireNotification {
+    pub id: String,
+    #[serde(default)]
+    pub unread: bool,
+    #[serde(default)]
+    pub reason: String,
+    pub updated_at: DateTime<Utc>,
+    pub subject: WireSubject,
+    pub repository: WireRepoRef,
+}
+
+impl WireNotification {
+    /// Into the model. `None` when the repository cannot be named.
+    pub fn into_notification(self) -> Option<Notification> {
+        let repo = RepoId::parse(&self.repository.full_name)?;
+        let number = self
+            .subject
+            .url
+            .as_deref()
+            .and_then(|url| url.rsplit('/').next())
+            .and_then(|tail| tail.parse().ok());
+        Some(Notification {
+            id: self.id,
+            unread: self.unread,
+            reason: self.reason,
+            updated_at: self.updated_at,
+            repo,
+            title: self.subject.title,
+            kind: SubjectKind::parse(&self.subject.kind),
+            number,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireComment {
+    pub id: u64,
+    pub user: WireUser,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl From<WireComment> for Comment {
+    fn from(comment: WireComment) -> Self {
+        Self {
+            id: comment.id,
+            author: comment.user.into(),
+            created_at: comment.created_at,
+            body: comment.body,
+            html_url: comment.html_url,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireSearch {
+    #[serde(default)]
+    pub items: Vec<WireIssue>,
+}
+
+/// GitHub's `message` on an error body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireMessage {
+    #[serde(default)]
+    pub message: String,
+}
+
+fn parse_status(state: &str) -> Status {
+    match state {
+        "open" => Status::Open,
+        _ => Status::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PULL_AS_ISSUE: &str = r#"{
+        "number": 12, "title": "Add a thing", "state": "closed",
+        "user": {"login": "alice", "avatar_url": "https://a"},
+        "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-02T10:00:00Z",
+        "comments": 3, "labels": [{"name": "bug", "color": "d73a4a"}],
+        "html_url": "https://github.com/o/r/pull/12", "body": null,
+        "pull_request": {"merged_at": "2026-09-02T10:00:00Z"},
+        "repository_url": "https://api.github.com/repos/o/r"
+    }"#;
+
+    #[test]
+    fn a_search_hit_names_its_repository_and_knows_it_is_a_merged_pull() {
+        let wire: WireIssue = serde_json::from_str(PULL_AS_ISSUE).unwrap();
+        assert!(wire.is_pull());
+        let item = wire.into_item(None).unwrap();
+        assert_eq!(item.repo, RepoId::new("o", "r"));
+        assert_eq!(item.state(), State::Merged);
+        assert_eq!(item.comments, Some(3));
+        assert_eq!(item.labels[0].color, "d73a4a");
+        assert_eq!(item.body, "", "a null body is an empty description");
+    }
+
+    #[test]
+    fn an_issue_from_a_listing_takes_the_repository_it_was_listed_under() {
+        let json = r#"{
+            "number": 3, "title": "Crash", "state": "open",
+            "user": {"login": "bob"},
+            "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-01T10:00:00Z"
+        }"#;
+        let wire: WireIssue = serde_json::from_str(json).unwrap();
+        assert!(!wire.is_pull());
+        let repo = RepoId::new("o", "r");
+        let item = wire.into_item(Some(&repo)).unwrap();
+        assert_eq!(item.repo, repo);
+        assert_eq!(item.kind, Kind::Issue);
+        assert_eq!(item.state(), State::Open);
+        assert_eq!(item.comments, None);
+    }
+
+    #[test]
+    fn a_pull_listing_carries_no_counts_and_the_detail_does() {
+        let listed = r#"{
+            "number": 5, "title": "T", "state": "open", "draft": true,
+            "user": {"login": "carol"},
+            "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-01T10:00:00Z",
+            "head": {"ref": "feature"}, "base": {"ref": "main"}
+        }"#;
+        let wire: WirePull = serde_json::from_str(listed).unwrap();
+        let pull = wire.into_pull(&RepoId::new("o", "r"));
+        assert_eq!(pull.item.state(), State::Draft);
+        assert_eq!(
+            (pull.head.as_str(), pull.base.as_str()),
+            ("feature", "main")
+        );
+        assert_eq!(pull.additions, 0);
+
+        let detailed = r#"{
+            "number": 5, "title": "T", "state": "closed", "merged_at": "2026-09-03T00:00:00Z",
+            "user": {"login": "carol"},
+            "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-01T10:00:00Z",
+            "head": {"ref": "feature"}, "base": {"ref": "main"},
+            "additions": 40, "deletions": 2, "changed_files": 3, "mergeable": null,
+            "requested_reviewers": [{"login": "dave"}]
+        }"#;
+        let wire: WirePull = serde_json::from_str(detailed).unwrap();
+        let pull = wire.into_pull(&RepoId::new("o", "r"));
+        assert_eq!(pull.item.state(), State::Merged);
+        assert_eq!(
+            (pull.additions, pull.deletions, pull.changed_files),
+            (40, 2, 3)
+        );
+        assert_eq!(pull.mergeable, None);
+        assert_eq!(pull.item.requested_reviewers[0].login, "dave");
+    }
+
+    #[test]
+    fn a_notification_reads_the_number_off_the_subject_url() {
+        let json = r#"{
+            "id": "123", "unread": true, "reason": "review_requested",
+            "updated_at": "2026-09-01T10:00:00Z",
+            "subject": {"title": "Fix", "url": "https://api.github.com/repos/o/r/pulls/44", "type": "PullRequest"},
+            "repository": {"full_name": "o/r"}
+        }"#;
+        let wire: WireNotification = serde_json::from_str(json).unwrap();
+        let notification = wire.into_notification().unwrap();
+        assert_eq!(notification.number, Some(44));
+        assert_eq!(notification.kind, SubjectKind::PullRequest);
+        assert_eq!(notification.repo, RepoId::new("o", "r"));
+
+        let json = r#"{
+            "id": "124", "unread": false, "reason": "subscribed",
+            "updated_at": "2026-09-01T10:00:00Z",
+            "subject": {"title": "v1.0", "url": null, "type": "Release"},
+            "repository": {"full_name": "o/r"}
+        }"#;
+        let wire: WireNotification = serde_json::from_str(json).unwrap();
+        let notification = wire.into_notification().unwrap();
+        assert_eq!(notification.number, None);
+        assert_eq!(notification.kind, SubjectKind::Release);
+    }
+
+    #[test]
+    fn a_repository_with_a_bad_name_is_dropped_rather_than_keyed_by_garbage() {
+        let json = r#"{"full_name": "nonsense"}"#;
+        let wire: WireRepo = serde_json::from_str(json).unwrap();
+        assert!(wire.into_repo().is_none());
+        let json = r#"{"full_name": "o/r", "description": "", "private": true, "pushed_at": "2026-09-01T10:00:00Z"}"#;
+        let repo: WireRepo = serde_json::from_str(json).unwrap();
+        let repo = repo.into_repo().unwrap();
+        assert!(repo.private);
+        assert_eq!(repo.description, None, "an empty description is none");
+    }
+}

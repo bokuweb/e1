@@ -1,0 +1,87 @@
+# AGENTS.md
+
+Guidance for AI coding agents (and humans) working in this repository.
+
+## What this project is
+
+**e1 is a native GitHub client, written in Rust on GPUI, built to stand on its own and to be embedded in [Ginka](https://github.com/bokuweb/ginka).**
+
+It reads the things a person checks on GitHub between commits — the inbox, the pull requests waiting on them, the issues assigned to them, any repository's open work — and shows them in one window with the same layout, tokens and toolkit as Ginka's agent workstation, so that the same views can later be mounted as a surface inside Ginka's window without a rewrite.
+
+**Read [`docs/roadmap.md`](docs/roadmap.md) before starting any non-trivial work.** It holds the architecture, the crate layout, the data model, the embedding contract, the milestone plan and the decision log. This file is the short version; the roadmap is authoritative.
+
+**For anything that renders, read [`docs/ui.md`](docs/ui.md) too.** It holds the layout, the design tokens and the region-by-region breakdown.
+
+## Current state
+
+**M0 is being landed.** The window opens frameless over a blurred desktop, with the navigation sidebar, the centre list and the right detail panel as resizable columns whose arrangement persists. The GitHub client reads the viewer, the inbox, repositories, pull requests, issues and comments over REST, with a scripted fake standing in for it in tests and in `E1_DEMO=1`. See `docs/roadmap.md` §5 for what each milestone still owes.
+
+## Commands
+
+```bash
+cargo run                                   # the desktop app; needs a GitHub token (see below)
+E1_DEMO=1 cargo run                         # the same window over scripted data, no network
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all
+cargo test -p e1-github -p e1-ui            # the fast loop: no GPUI build
+```
+
+On a volume without native extended attributes macOS drops `._*` sidecar files next to every file written; `rust-i18n` reads every file in `locales/`, so delete them (`find . -name '._*' -not -path './target/*' -delete`) before a build that fails on `locales/._app.yml`.
+
+The token is discovered, never stored: `E1_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `GH_TOKEN`, then whatever `gh auth token` prints. `E1_HOME` overrides `~/.e1`; `E1_LOG` sets the tracing filter.
+
+## Layout
+
+```
+e1/
+├─ Cargo.toml           # workspace root; the `e1` binary lives here and is deliberately thin
+├─ src/main.rs          # opens the window, mounts e1-views::Shell
+├─ crates/
+│  ├─ e1-github/        # domain: the data model, the `GitHub` trait, the REST client,
+│  │                    # token discovery, and the scripted fake. No GPUI.
+│  ├─ e1-ui/            # design tokens, assets, settings, layout, view models --
+│  │                    # everything UI-side that is testable without a window
+│  └─ e1-views/         # the GPUI views, as a library a host window can mount
+├─ locales/app.yml      # every user-visible string, en and ja side by side
+├─ assets/themes/       # design tokens (dark.json, light.json), Ginka's schema
+├─ assets/icons/        # app-owned icons, layered over the toolkit's set
+└─ docs/
+```
+
+## Architectural rules
+
+These are load-bearing. Each one exists so that Ginka can mount these views later; violating one creates work that has to be undone at embedding time.
+
+1. **The views are a library.** Everything that draws lives in `e1-views`, and `src/main.rs` only opens a window and hands it a `Shell`. A view that only exists in the binary is a view Ginka cannot mount.
+2. **GitHub is reached through the `GitHub` trait, never directly.** Views hold an `Arc<dyn GitHub>` and nothing else knows about HTTP. Ginka's daemon owns all state in that app (its rule 1), so when embedded the implementation it supplies will proxy through the daemon — which is only possible if no view has a private path to the network.
+3. **No second reactor.** HTTP is blocking (`ureq`) and runs on GPUI's background executor. Ginka runs on `smol` and forbids a second async runtime in its process; an async HTTP client here would bring tokio along.
+4. **One toolkit, at Ginka's rev.** `gpui-component` is the only linked UI library and it owns the `gpui` rev; `Cargo.lock` pins both to what Ginka's lock pins. Two revs of `gpui` are two unrelated sets of types, and a view built against the wrong one cannot be mounted at all. Never pin `gpui` directly; bump the toolkit as its own change, and only to a rev Ginka has moved to.
+5. **Tokens by name, and the same names as Ginka.** No view hardcodes a colour, radius or duration; everything resolves through `e1_ui::Tokens`, whose JSON schema is Ginka's `assets/themes/*.json`. That is what lets the host swap its own tokens in (roadmap §4.3).
+6. **Domain logic belongs in `e1-github` or `e1-ui`, not in `e1-views`.** If it can be tested without a window, it must live where it can be tested without a window. This is also a compiler constraint: `rustc` overflows its stack expanding `#[test]` in a crate that also holds the toolkit's builder chains, so `e1-views` carries no tests at all.
+7. **Streaming and long lists are virtualized from the first commit.** The centre list is a `uniform_list`; a repository with four thousand issues must not cost four thousand elements.
+8. **Local-first, and the token is never written.** No feature may require anything but a GitHub token, and the token is read from the environment or from `gh` on every launch rather than stored by this app.
+
+## UI stack
+
+- **Linked:** [`gpui-component`](https://github.com/longbridge/gpui-component) — resizable panels, virtualized lists, markdown, tooltips, inputs.
+- **Reference, not a dependency:** Ginka's own `src/` for how the three-column frameless window is assembled, and `bezel` for the glass theme. Both are read for the mechanism and rebuilt here against our own types; nothing is copied in.
+- Before writing a widget, check `gpui-component`'s gallery for an existing one.
+
+## Conventions
+
+- **Rust edition 2024.** `cargo fmt` and `cargo clippy -D warnings` must pass; CI enforces both.
+- **Errors:** `anyhow` at binary boundaries, typed errors (`thiserror`) inside `e1-github`.
+- **Tests:** test-first for anything with a decision in it — the wire mapping (a merged pull is `closed` with `merged_at` set), the token precedence, the `Link` header, relative time. Network behaviour is tested against `e1_github::Scripted`, never against GitHub.
+- **i18n:** user-visible strings go through `rust-i18n`. `en` and `ja` are both maintained.
+- **a11y is a rule, not a polish pass.** Every control reachable by mouse is reachable by keyboard with visible focus; nothing encodes meaning in colour alone (a state is an icon *and* a colour).
+- **English in the repository.** Code, comments, docs, commit messages and pull requests are written in English, no matter what language the conversation that produced them was in.
+- **Commits and pull requests:** imperative subject, explain *why* in the body. Reference the roadmap milestone when the change advances one.
+- **Comments are rustdoc.** Every public item carries a `///` comment; every crate and module root carries a `//!` header saying what lives there and what it owns. Document what a caller must know — invariants, errors, the constraint that made the code look the way it does — not what the signature already says.
+
+## Working agreements for agents
+
+- When a change alters architecture, data model, or scope, **update `docs/roadmap.md` in the same change**, including the decision log at the bottom. When it alters layout, tokens or component choices, update `docs/ui.md`.
+- Do not silently expand scope. The milestone ordering in the roadmap is deliberate.
+- When something here diverges from how Ginka does the same thing, say why in the decision log — divergence is what embedding pays for.
+- Keep this file and `CLAUDE.md` truthful. If you add commands, add them here once they actually work.
