@@ -9,8 +9,10 @@
 use crate::detail::Detail;
 use crate::list::{ItemEvent, ItemList};
 use crate::sidebar::{Sidebar, SidebarEvent};
-use crate::store::{Store, StoreEvent};
-use e1_github::{GitHub, ListKind, StatusFilter};
+use crate::signin::{SignIn, SignInEvent};
+use crate::store::{ItemKey, Store, StoreEvent};
+use e1_github::auth::{Keychain, Source};
+use e1_github::{GitHub, ListKind, Rest, Scripted, StatusFilter};
 use e1_ui::settings::{self, AppSettings};
 use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
@@ -55,6 +57,12 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     list: Entity<ItemList>,
     detail: Entity<Detail>,
+    sign_in: Entity<SignIn>,
+    /// Whether there is a GitHub to draw. Without one the centre column is
+    /// the sign-in screen.
+    signed_in: bool,
+    /// Where the token came from, which is what signing out has to undo.
+    token_source: Option<Source>,
     focus_handle: FocusHandle,
     /// With no title bar the strips are what the window is dragged by, and a
     /// drag is a press that then moved. Set on the press, cleared on the
@@ -65,14 +73,22 @@ pub struct Shell {
 
 impl Shell {
     /// Open over a source, with the arrangement the settings remember.
+    ///
+    /// `github` is `None` when no token was found: the window opens on the
+    /// sign-in screen and everything else waits. `token_source` says where
+    /// a token came from, so signing out knows whether it can delete it.
     pub fn new(
-        github: Arc<dyn GitHub>,
+        github: Option<Arc<dyn GitHub>>,
+        token_source: Option<Source>,
         paths: Paths,
         settings: AppSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = cx.new(|_| Store::new(github));
+        let signed_in = github.is_some();
+        let source: Arc<dyn GitHub> = github.unwrap_or_else(|| Arc::new(Scripted::empty()));
+        let store = cx.new(|_| Store::new(source));
+        let sign_in = cx.new(|_| SignIn::new());
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let list = cx.new(|cx| ItemList::new(store.clone(), cx));
         let detail = cx.new(|cx| Detail::new(store.clone(), cx));
@@ -80,6 +96,20 @@ impl Shell {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
+            SidebarEvent::SignOut => this.sign_out(cx),
+        }));
+        subscriptions.push(cx.subscribe(&sign_in, |this, _, event, cx| match event {
+            SignInEvent::SignedIn(token) => {
+                let github: Arc<dyn GitHub> = Arc::new(Rest::new(token.clone()));
+                this.signed_in = true;
+                this.token_source = Some(Source::Keychain);
+                this.store
+                    .update(cx, |store, cx| store.set_source(github, cx));
+                this.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.select(Focus::Section(e1_ui::Section::Inbox), cx)
+                });
+                cx.notify();
+            }
         }));
         subscriptions.push(cx.subscribe(&list, |this, _, event, cx| match event {
             ItemEvent::Open { key, is_pull } => {
@@ -110,17 +140,60 @@ impl Shell {
             sidebar,
             list,
             detail,
+            sign_in,
+            signed_in,
+            token_source,
             focus_handle,
             dragging: false,
             _subscriptions: subscriptions,
         };
-        this.store.update(cx, |store, cx| store.refresh_all(cx));
-        // The window opens on the inbox, which is the question a person
-        // opens GitHub to answer.
-        this.sidebar.update(cx, |sidebar, cx| {
-            sidebar.select(Focus::Section(e1_ui::Section::Inbox), cx)
-        });
+        if signed_in {
+            this.store.update(cx, |store, cx| store.refresh_all(cx));
+            // The window opens on the inbox, which is the question a person
+            // opens GitHub to answer.
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.select(Focus::Section(e1_ui::Section::Inbox), cx)
+            });
+        }
         this
+    }
+
+    /// Open an item on its files as soon as the window is up.
+    ///
+    /// For demos and screenshots (`E1_DEMO_OPEN=owner/name#12:src/main.rs`,
+    /// the path optional): a native window cannot be driven from a script
+    /// the way a page can, and a screenshot of the diff view is worth an
+    /// environment variable.
+    pub fn open_at_launch(&mut self, key: ItemKey, file: Option<String>, cx: &mut Context<Self>) {
+        self.detail.update(cx, |detail, cx| {
+            detail.show(key, None, cx);
+            detail.show_files(file, cx);
+        });
+        if !self.layout.is_open(Panel::RightPanel) {
+            self.toggle(Panel::RightPanel, cx);
+        }
+    }
+
+    /// Forget the token and go back to the sign-in screen.
+    ///
+    /// Only a token this app stored is deleted. One from the environment or
+    /// from `gh` is dropped for this session and found again next launch,
+    /// because deleting it would be reaching into someone else's setup.
+    fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.token_source == Some(Source::Keychain) {
+            cx.background_spawn(async {
+                if let Err(error) = Keychain::forget() {
+                    tracing::warn!(%error, "could not delete the keychain entry");
+                }
+            })
+            .detach();
+        }
+        self.signed_in = false;
+        self.token_source = None;
+        self.store.update(cx, |store, cx| {
+            store.set_source(Arc::new(Scripted::empty()), cx)
+        });
+        cx.notify();
     }
 
     /// Point the centre column at something.
@@ -339,7 +412,11 @@ impl Shell {
         let leading = !self.layout.is_open(Panel::Sidebar);
         let focus = self.list.read(cx).focus().cloned();
         let loading = self.list.read(cx).is_loading(cx);
-        let title: Option<SharedString> = focus.as_ref().map(|focus| focus.title().into());
+        let title: Option<SharedString> = if self.signed_in {
+            focus.as_ref().map(|focus| focus.title().into())
+        } else {
+            Some(rust_i18n::t!("signin.title").to_string().into())
+        };
         let subtitle: Option<SharedString> = focus
             .as_ref()
             .and_then(|focus| focus.subtitle())
@@ -353,6 +430,7 @@ impl Shell {
                 cx,
             )
         });
+        let focus = focus.filter(|_| self.signed_in);
         let kind_chips = focus
             .as_ref()
             .and_then(|focus| match focus {
@@ -524,6 +602,11 @@ impl Render for Shell {
         });
         let column_header = self.column_header(cx).into_any_element();
         let right_header = right_open.then(|| self.right_header(cx).into_any_element());
+        let centre: AnyElement = if self.signed_in {
+            self.list.clone().into_any_element()
+        } else {
+            self.sign_in.clone().into_any_element()
+        };
 
         v_flex()
             .key_context(CONTEXT)
@@ -566,7 +649,7 @@ impl Render for Shell {
                                 v_flex()
                                     .size_full()
                                     .child(column_header)
-                                    .child(self.list.clone())
+                                    .child(centre)
                                     .into_any_element(),
                             ),
                         )

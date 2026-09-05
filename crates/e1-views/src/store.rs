@@ -5,7 +5,9 @@
 //! the background executor and comes back through `this.update`; nothing
 //! here blocks the UI thread, and nothing but this file calls the trait.
 
-use e1_github::{Comment, GitHub, Item, ListKind, Notification, Pull, Repo, RepoId, Viewer};
+use e1_github::{
+    Comment, GitHub, Item, ListKind, Notification, Pull, PullFile, Repo, RepoId, Viewer,
+};
 use e1_ui::fetch::describe;
 use e1_ui::{Fetch, Focus, Section};
 use gpui::{AppContext as _, Context, EventEmitter};
@@ -40,6 +42,7 @@ pub struct Store {
     inbox: Fetch<Vec<Notification>>,
     lists: HashMap<Focus, Fetch<Vec<Item>>>,
     details: HashMap<ItemKey, Fetch<Detail>>,
+    files: HashMap<ItemKey, Fetch<Vec<PullFile>>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -54,7 +57,25 @@ impl Store {
             inbox: Fetch::Idle,
             lists: HashMap::new(),
             details: HashMap::new(),
+            files: HashMap::new(),
         }
+    }
+
+    /// Swap the source and forget everything the old one said.
+    ///
+    /// Signing in and out: a token change is a different GitHub, and a list
+    /// fetched as one person must not be shown to the next. Everything is
+    /// fetched again from the new source.
+    pub fn set_source(&mut self, github: Arc<dyn GitHub>, cx: &mut Context<Self>) {
+        self.github = github;
+        self.viewer = Fetch::Idle;
+        self.repos = Fetch::Idle;
+        self.inbox = Fetch::Idle;
+        self.lists.clear();
+        self.details.clear();
+        self.files.clear();
+        self.refresh_all(cx);
+        cx.emit(StoreEvent::Changed);
     }
 
     /// Who the token is.
@@ -199,6 +220,31 @@ impl Store {
     pub fn ensure_detail(&mut self, key: ItemKey, is_pull: Option<bool>, cx: &mut Context<Self>) {
         if self.details.get(&key).is_none_or(Fetch::is_idle) {
             self.load_detail(key, is_pull, cx);
+        }
+    }
+
+    /// A pull's files, if they have ever been asked for.
+    pub fn files(&self, key: &ItemKey) -> Option<&Fetch<Vec<PullFile>>> {
+        self.files.get(key)
+    }
+
+    /// Fetch a pull's files.
+    pub fn load_files(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        self.files.entry(key.clone()).or_default().begin();
+        let (repo, number) = key.clone();
+        self.fetch(
+            cx,
+            move |github| github.pull_files(&repo, number),
+            move |this, result| {
+                this.files.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch a pull's files only if they never have been.
+    pub fn ensure_files(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        if self.files.get(&key).is_none_or(Fetch::is_idle) {
+            self.load_files(key, cx);
         }
     }
 

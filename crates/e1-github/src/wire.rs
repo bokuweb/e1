@@ -341,6 +341,35 @@ pub(crate) struct WireSearch {
     pub items: Vec<WireIssue>,
 }
 
+/// One entry of `/pulls/{n}/files`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WirePullFile {
+    pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+impl From<WirePullFile> for PullFile {
+    fn from(file: WirePullFile) -> Self {
+        Self {
+            filename: file.filename,
+            previous_filename: file.previous_filename,
+            status: FileStatus::parse(&file.status),
+            additions: file.additions,
+            deletions: file.deletions,
+            patch: file.patch,
+        }
+    }
+}
+
 /// GitHub's `message` on an error body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireMessage {
@@ -458,6 +487,22 @@ mod tests {
         let notification = wire.into_notification().unwrap();
         assert_eq!(notification.number, None);
         assert_eq!(notification.kind, SubjectKind::Release);
+    }
+
+    #[test]
+    fn a_binary_file_has_no_patch_and_a_rename_keeps_where_it_came_from() {
+        let json = r#"[
+            {"filename": "a.png", "status": "added", "additions": 0, "deletions": 0},
+            {"filename": "src/new.rs", "previous_filename": "src/old.rs", "status": "renamed",
+             "additions": 1, "deletions": 1, "patch": "@@ -1 +1 @@\n-a\n+b"}
+        ]"#;
+        let files: Vec<WirePullFile> = serde_json::from_str(json).unwrap();
+        let files: Vec<PullFile> = files.into_iter().map(Into::into).collect();
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert_eq!(files[0].patch, None);
+        assert_eq!(files[1].status, FileStatus::Renamed);
+        assert_eq!(files[1].previous_filename.as_deref(), Some("src/old.rs"));
+        assert!(files[1].patch.as_deref().unwrap().starts_with("@@"));
     }
 
     #[test]

@@ -429,3 +429,60 @@ mod tests {
         assert_eq!(notification.html_url(), None);
     }
 }
+
+/// What happened to a file in a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+    /// New in this pull.
+    Added,
+    /// Deleted by this pull.
+    Removed,
+    /// Changed in place.
+    Modified,
+    /// Moved, possibly changed too.
+    Renamed,
+    /// Anything else GitHub reports (`copied`, `changed`, `unchanged`).
+    Other,
+}
+
+impl FileStatus {
+    /// Map GitHub's `status`.
+    pub fn parse(status: &str) -> Self {
+        match status {
+            "added" => Self::Added,
+            "removed" => Self::Removed,
+            "modified" => Self::Modified,
+            "renamed" => Self::Renamed,
+            _ => Self::Other,
+        }
+    }
+
+    /// The one-letter mark a file list leads with.
+    pub fn letter(self) -> &'static str {
+        match self {
+            Self::Added => "A",
+            Self::Removed => "D",
+            Self::Modified => "M",
+            Self::Renamed => "R",
+            Self::Other => "·",
+        }
+    }
+}
+
+/// One file of a pull request's diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullFile {
+    /// The path after the pull.
+    pub filename: String,
+    /// The path before, when it moved.
+    pub previous_filename: Option<String>,
+    /// What happened to it.
+    pub status: FileStatus,
+    /// Lines added.
+    pub additions: u64,
+    /// Lines removed.
+    pub deletions: u64,
+    /// The unified diff, without the `---`/`+++` header. `None` for a
+    /// binary file or one too large for GitHub to send.
+    pub patch: Option<String>,
+}

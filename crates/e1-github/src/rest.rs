@@ -249,6 +249,12 @@ impl GitHub for Rest {
         let pages: Vec<WireComment> = self.get_pages(&path)?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
+
+    fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>> {
+        let path = format!("/repos/{repo}/pulls/{number}/files?per_page=100");
+        let pages: Vec<WirePullFile> = self.get_pages(&path)?;
+        Ok(pages.into_iter().map(Into::into).collect())
+    }
 }
 
 #[cfg(test)]
