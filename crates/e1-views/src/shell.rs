@@ -95,8 +95,9 @@ impl Shell {
         let signed_in = github.is_some();
         let source: Arc<dyn GitHub> = github.unwrap_or_else(|| Arc::new(Scripted::empty()));
         let snapshot = paths.snapshot();
+        let avatars = paths.cache().join("avatars");
         let store = cx.new(|_| {
-            let store = Store::new(source);
+            let store = Store::new(source).with_avatars(avatars);
             // A window that opens signed out must not read a snapshot that
             // belongs to whoever was signed in before.
             if signed_in {
@@ -112,7 +113,7 @@ impl Shell {
         });
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let list = cx.new(|cx| ItemList::new(store.clone(), cx));
-        let detail = cx.new(|cx| Detail::new(store.clone(), cx));
+        let detail = cx.new(|cx| Detail::new(store.clone(), window, cx));
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&browser, |this, _, event, cx| match event {

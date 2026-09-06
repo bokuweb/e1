@@ -42,7 +42,13 @@ const ICONS: &[(&str, &str)] = &[
         icon::USER_CHECK,
         include_str!("../../../assets/icons/user-check.svg"),
     ),
+    (icon::E1, include_str!("../../../assets/icons/e1.svg")),
+    (LOGO, include_str!("../../../assets/logo.svg")),
 ];
+
+/// The colour logo, drawn with `img` so its gradient survives; an `Icon`
+/// would paint it in one colour.
+pub const LOGO: &str = "images/logo.svg";
 
 /// Our icons, addressed the way [`gpui_component::Icon::path`] expects.
 pub mod icon {
@@ -62,6 +68,8 @@ pub mod icon {
     pub const LOCK: &str = "icons/lock.svg";
     /// Assigned to you.
     pub const USER_CHECK: &str = "icons/user-check.svg";
+    /// The app's own mark, in one colour: an `e` and a `1`.
+    pub const E1: &str = "icons/e1.svg";
     /// The toolkit's: a closed issue.
     pub const CIRCLE_CHECK: &str = "icons/circle-check.svg";
     /// The toolkit's: the inbox.
@@ -106,6 +114,8 @@ mod tests {
             icon::MESSAGE,
             icon::LOCK,
             icon::USER_CHECK,
+            icon::E1,
+            LOGO,
         ] {
             let loaded = Assets
                 .load(path)

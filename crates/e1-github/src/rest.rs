@@ -153,6 +153,45 @@ impl Rest {
         })
     }
 
+    /// One request with a JSON body, decoded. Nothing here goes through the
+    /// cache: a write's answer is the new state, and GitHub does not tag it.
+    fn send<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T> {
+        let url = format!("{}{path}", self.base);
+        let request = match method {
+            "POST" => self.agent.post(&url),
+            "PATCH" => self.agent.patch(&url),
+            _ => self.agent.put(&url),
+        };
+        let mut response = request
+            .header("Authorization", &format!("Bearer {}", self.token.secret()))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "e1")
+            .send_json(body)
+            .map_err(|error| Error::Transport(error.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| Error::Transport(error.to_string()))?;
+        if (200..300).contains(&status) {
+            return serde_json::from_str(&text).map_err(|error| Error::Decode(error.to_string()));
+        }
+        let message = serde_json::from_str::<WireMessage>(&text)
+            .map(|wire| wire.message)
+            .unwrap_or_default();
+        Err(Error::Status {
+            status,
+            path: path.to_string(),
+            message,
+        })
+    }
+
     /// Every page of a listing, up to [`PAGE_CAP`].
     fn get_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
         let mut collected = Vec::new();
@@ -303,6 +342,63 @@ impl GitHub for Rest {
         let (tree, _): (WireTree, _) =
             self.get(&format!("/repos/{repo}/git/trees/HEAD?recursive=1"))?;
         Ok(tree.into())
+    }
+
+    fn avatar(&self, url: &str) -> Result<Vec<u8>> {
+        // GitHub's avatar host takes `s` for the size; a row needs 80 px at
+        // most, and the default is 460.
+        let sized = if url.contains('?') {
+            format!("{url}&s=80")
+        } else {
+            format!("{url}?s=80")
+        };
+        let mut response = self
+            .agent
+            .get(&sized)
+            .header("User-Agent", "e1")
+            .call()
+            .map_err(|error| Error::Transport(error.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(Error::Status {
+                status,
+                path: url.to_string(),
+                message: String::new(),
+            });
+        }
+        response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|error| Error::Transport(error.to_string()))
+    }
+
+    fn comment_on(&self, repo: &RepoId, number: u64, body: &str) -> Result<Comment> {
+        let comment: WireComment = self.send(
+            "POST",
+            &format!("/repos/{repo}/issues/{number}/comments"),
+            serde_json::json!({ "body": body }),
+        )?;
+        Ok(comment.into())
+    }
+
+    fn set_open(&self, repo: &RepoId, number: u64, open: bool) -> Result<Item> {
+        let issue: WireIssue = self.send(
+            "PATCH",
+            &format!("/repos/{repo}/issues/{number}"),
+            serde_json::json!({ "state": if open { "open" } else { "closed" } }),
+        )?;
+        issue
+            .into_item(Some(repo))
+            .ok_or_else(|| Error::Decode("item without a repository".into()))
+    }
+
+    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
+        let _: serde_json::Value = self.send(
+            "PUT",
+            &format!("/repos/{repo}/pulls/{number}/merge"),
+            serde_json::json!({}),
+        )?;
+        Ok(())
     }
 
     fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent> {

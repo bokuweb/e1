@@ -4,6 +4,7 @@
 //! it lands (`AGENTS.md` rule 7): the list only draws the rows on screen, and
 //! a row is drawn from strings that were formatted once, not on every scroll.
 
+use crate::avatar::avatar;
 use crate::store::{ItemKey, Store, StoreEvent};
 use chrono::Utc;
 use e1_ui::assets::icon;
@@ -116,6 +117,16 @@ impl ItemList {
                 })
                 .unwrap_or_default(),
         };
+        let urls: Vec<String> = self
+            .rows
+            .iter()
+            .filter_map(|row| row.avatar_url.clone())
+            .collect();
+        self.store.update(cx, |store, cx| {
+            for url in urls {
+                store.ensure_avatar(&url, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -150,6 +161,18 @@ impl ItemList {
         };
         let selected = row.key.is_some() && self.selected == row.key;
         let glyph_color = row.glyph.role().color(tokens.colors());
+        let picture = row
+            .avatar_url
+            .as_deref()
+            .and_then(|url| self.store.read(cx).avatar(url));
+        let author = row.avatar_url.as_ref().map(|_| {
+            avatar(
+                picture,
+                row.meta.split(" · ").next().unwrap_or_default(),
+                px(18.),
+                cx,
+            )
+        });
         // Lists that span repositories say which one each row is from.
         let spans_repos = matches!(self.focus, Some(Focus::Section(_) | Focus::Search { .. }));
 
@@ -240,6 +263,7 @@ impl ItemList {
                                                 .child(row.repo.clone()),
                                         )
                                     })
+                                    .children(author)
                                     .child(
                                         div()
                                             .text_xs()

@@ -20,6 +20,7 @@ use e1_ui::snapshot::{self, ItemDetail, Snapshot};
 use e1_ui::{Fetch, Focus, Section};
 use gpui::{AppContext as _, Context, EventEmitter};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,6 +54,12 @@ pub struct Store {
     contents: HashMap<FileKey, Fetch<FileContent>>,
     /// Where the snapshot is written, when it is.
     snapshot: Option<PathBuf>,
+    /// Where avatars are kept, when they are.
+    avatar_dir: Option<PathBuf>,
+    /// Each avatar URL's file, once fetched.
+    avatars: HashMap<String, Fetch<PathBuf>>,
+    /// The last write on each item: in flight, done, or refused.
+    actions: HashMap<ItemKey, Fetch<()>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -72,7 +79,115 @@ impl Store {
             trees: HashMap::new(),
             contents: HashMap::new(),
             snapshot: None,
+            avatar_dir: None,
+            avatars: HashMap::new(),
+            actions: HashMap::new(),
         }
+    }
+
+    /// Keep avatars in this directory.
+    pub fn with_avatars(mut self, dir: PathBuf) -> Self {
+        self.avatar_dir = Some(dir);
+        self
+    }
+
+    /// The file an avatar is in, once it is.
+    pub fn avatar(&self, url: &str) -> Option<PathBuf> {
+        self.avatars.get(url).and_then(Fetch::value).cloned()
+    }
+
+    /// Fetch an avatar unless it is here already, on disk or in flight.
+    ///
+    /// The file is named by a hash of the URL and read from disk first: a
+    /// picture fetched last week is a picture, and GitHub's avatar URLs are
+    /// stable per account.
+    pub fn ensure_avatar(&mut self, url: &str, cx: &mut Context<Self>) {
+        let Some(dir) = self.avatar_dir.clone() else {
+            return;
+        };
+        if url.is_empty() || self.avatars.contains_key(url) {
+            return;
+        }
+        let mut hasher = DefaultHasher::new();
+        url.hash(&mut hasher);
+        let path = dir.join(format!("{:016x}.img", hasher.finish()));
+        if path.exists() {
+            self.avatars.insert(url.to_string(), Fetch::Ready(path));
+            return;
+        }
+        self.avatars
+            .insert(url.to_string(), Fetch::Loading { stale: None });
+        let key = url.to_string();
+        let source = url.to_string();
+        self.fetch(
+            cx,
+            move |github| {
+                let bytes = github.avatar(&source)?;
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| e1_github::Error::Transport(e.to_string()))?;
+                let temp = path.with_extension("img.tmp");
+                std::fs::write(&temp, bytes)
+                    .map_err(|e| e1_github::Error::Transport(e.to_string()))?;
+                std::fs::rename(&temp, &path)
+                    .map_err(|e| e1_github::Error::Transport(e.to_string()))?;
+                Ok(path)
+            },
+            move |this, result, _| {
+                this.avatars.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// The last write on an item, if there was one.
+    pub fn action(&self, key: &ItemKey) -> Option<&Fetch<()>> {
+        self.actions.get(key)
+    }
+
+    /// Run a write on an item, then read the item again so the screen shows
+    /// what GitHub now says rather than what the window guessed.
+    fn act<W>(&mut self, key: ItemKey, work: W, cx: &mut Context<Self>)
+    where
+        W: FnOnce(&dyn GitHub, &RepoId, u64) -> e1_github::Result<()> + Send + 'static,
+    {
+        self.actions.entry(key.clone()).or_default().begin();
+        let (repo, number) = key.clone();
+        self.fetch(
+            cx,
+            move |github| work(github, &repo, number),
+            move |this, result, cx| {
+                let ok = result.is_ok();
+                this.actions.entry(key.clone()).or_default().finish(result);
+                if ok {
+                    // The write's answer is partial (a comment, a state);
+                    // the detail is the whole, and the cache makes the
+                    // re-read cheap.
+                    this.load_detail(key, None, cx);
+                }
+            },
+        );
+    }
+
+    /// Leave a comment.
+    pub fn comment_on(&mut self, key: ItemKey, body: String, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.comment_on(repo, number, &body).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Close an item, or open it again.
+    pub fn set_open(&mut self, key: ItemKey, open: bool, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.set_open(repo, number, open).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Merge a pull.
+    pub fn merge(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        self.act(key, |github, repo, number| github.merge(repo, number), cx);
     }
 
     /// Remember what lands at this path, and start from what is there.
@@ -232,7 +347,7 @@ impl Store {
         self.fetch(
             cx,
             |github| github.viewer(),
-            |this, result| this.viewer.finish(result),
+            |this, result, _| this.viewer.finish(result),
         );
     }
 
@@ -242,7 +357,7 @@ impl Store {
         self.fetch(
             cx,
             |github| github.repositories(),
-            |this, result| this.repos.finish(result),
+            |this, result, _| this.repos.finish(result),
         );
     }
 
@@ -252,7 +367,7 @@ impl Store {
         self.fetch(
             cx,
             |github| github.notifications(),
-            |this, result| this.inbox.finish(result),
+            |this, result, _| this.inbox.finish(result),
         );
     }
 
@@ -275,7 +390,7 @@ impl Store {
                 Focus::Repo { repo, kind, status } => github.items(repo, *kind, *status),
                 Focus::Files { .. } => Ok(Vec::new()),
             },
-            move |this, result| {
+            move |this, result, _| {
                 this.lists.entry(key).or_default().finish(result);
             },
         );
@@ -329,7 +444,7 @@ impl Store {
                     comments,
                 })
             },
-            move |this, result| {
+            move |this, result, _| {
                 this.details.entry(key).or_default().finish(result);
             },
         );
@@ -349,7 +464,7 @@ impl Store {
         self.fetch(
             cx,
             move |github| github.pull_files(&repo, number),
-            move |this, result| {
+            move |this, result, _| {
                 this.pull_files.entry(key).or_default().finish(result);
             },
         );
@@ -369,7 +484,7 @@ impl Store {
         self.fetch(
             cx,
             move |github| github.tree(&repo),
-            move |this, result| {
+            move |this, result, _| {
                 this.trees.entry(key).or_default().finish(result);
             },
         );
@@ -389,7 +504,7 @@ impl Store {
         self.fetch(
             cx,
             move |github| github.file(&repo, &path),
-            move |this, result| {
+            move |this, result, _| {
                 this.contents.entry(key).or_default().finish(result);
             },
         );
@@ -420,7 +535,7 @@ impl Store {
     where
         T: Send + 'static,
         W: FnOnce(&dyn GitHub) -> e1_github::Result<T> + Send + 'static,
-        A: FnOnce(&mut Self, Result<T, String>) + 'static,
+        A: FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
     {
         cx.notify();
         let github = self.github.clone();
@@ -434,7 +549,7 @@ impl Store {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                apply(this, result);
+                apply(this, result, cx);
                 cx.emit(StoreEvent::Changed);
                 cx.notify();
                 this.persist(cx);

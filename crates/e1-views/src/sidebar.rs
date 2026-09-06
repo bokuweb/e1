@@ -5,6 +5,7 @@
 //! with that, so the sidebar does not know what a list is and the shell does
 //! not know how a row is drawn.
 
+use crate::avatar::avatar;
 use crate::store::{Store, StoreEvent};
 use e1_github::Repo;
 use e1_ui::assets::icon;
@@ -34,8 +35,20 @@ impl Sidebar {
     /// A sidebar over a store. It redraws whenever the store changes, because
     /// the inbox count and the repository list are the store's.
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        cx.subscribe(&store, |_, _, _: &StoreEvent, cx| cx.notify())
-            .detach();
+        cx.subscribe(&store, |this, _, _: &StoreEvent, cx| {
+            let url = this
+                .store
+                .read(cx)
+                .viewer()
+                .value()
+                .map(|viewer| viewer.avatar_url.clone());
+            if let Some(url) = url {
+                this.store
+                    .update(cx, |store, cx| store.ensure_avatar(&url, cx));
+            }
+            cx.notify();
+        })
+        .detach();
         Self {
             store,
             selected: None,
@@ -84,6 +97,7 @@ impl Sidebar {
             .py_2p5()
             .gap_2()
             .items_center()
+            .child(img(e1_ui::assets::LOGO).size_4().flex_shrink_0())
             .child(
                 div()
                     .text_sm()
@@ -239,15 +253,12 @@ impl Sidebar {
         let tokens = Tokens::global(cx);
         let viewer = self.store.read(cx).viewer().value().cloned();
         let signed_in = viewer.is_some();
-        let (initial, login): (SharedString, SharedString) = match viewer {
+        let picture = viewer
+            .as_ref()
+            .and_then(|viewer| self.store.read(cx).avatar(&viewer.avatar_url));
+        let (initial, login): (String, SharedString) = match viewer {
             Some(viewer) => (
-                viewer
-                    .login
-                    .chars()
-                    .next()
-                    .map(|c| c.to_ascii_uppercase().to_string())
-                    .unwrap_or_default()
-                    .into(),
+                viewer.login.clone(),
                 viewer.name.clone().unwrap_or(viewer.login).into(),
             ),
             None => (
@@ -255,6 +266,7 @@ impl Sidebar {
                 rust_i18n::t!("app.signed_out").to_string().into(),
             ),
         };
+        let picture = avatar(picture, &initial, px(24.), cx);
         h_flex()
             .w_full()
             .px_3()
@@ -263,18 +275,7 @@ impl Sidebar {
             .items_center()
             .border_t_1()
             .border_color(tokens.colors().border_subtle)
-            .child(
-                div()
-                    .size_6()
-                    .rounded_full()
-                    .bg(tokens.colors().row_active())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_xs()
-                    .text_color(tokens.colors().text_primary)
-                    .child(initial),
-            )
+            .child(picture)
             .child(
                 div()
                     .flex_1()

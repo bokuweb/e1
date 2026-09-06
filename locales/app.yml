@@ -237,3 +237,25 @@ search.title:
 search.placeholder:
   en: Search issues and pull requests…
   ja: Issue と PR を検索…
+
+detail.comment.placeholder:
+  en: Leave a comment…
+  ja: コメントを書く…
+detail.comment.send:
+  en: Comment
+  ja: コメント
+detail.close:
+  en: Close
+  ja: クローズ
+detail.reopen:
+  en: Reopen
+  ja: 再オープン
+detail.merge:
+  en: Merge
+  ja: マージ
+detail.merge.confirm:
+  en: Merge now?
+  ja: 本当にマージ？
+detail.working:
+  en: Working…
+  ja: 処理中…

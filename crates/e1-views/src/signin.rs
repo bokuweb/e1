@@ -340,11 +340,7 @@ impl Render for SignIn {
                     .max_w(px(420.))
                     .items_center()
                     .gap_5()
-                    .child(
-                        Icon::new(IconName::Github)
-                            .size_8()
-                            .text_color(tokens.colors().text_secondary),
-                    )
+                    .child(img(e1_ui::assets::LOGO).size(px(56.)))
                     .child(
                         div()
                             .text_xl()

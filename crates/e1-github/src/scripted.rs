@@ -555,6 +555,75 @@ impl GitHub for Scripted {
             .unwrap_or_default())
     }
 
+    fn comment_on(&self, repo: &RepoId, number: u64, body: &str) -> Result<Comment> {
+        let mut data = self.guard()?;
+        let author = data
+            .viewer
+            .as_ref()
+            .map(|viewer| viewer.login.clone())
+            .unwrap_or_else(|| "you".into());
+        let comments = data.comments.entry((repo.clone(), number)).or_default();
+        let comment = Comment {
+            id: 1000 + comments.len() as u64,
+            author: user(&author),
+            created_at: Utc::now(),
+            body: body.to_string(),
+            html_url: String::new(),
+        };
+        comments.push(comment.clone());
+        if let Some(item) = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+        {
+            item.comments = Some(item.comments.unwrap_or(0) + 1);
+        }
+        Ok(comment)
+    }
+
+    fn set_open(&self, repo: &RepoId, number: u64, open: bool) -> Result<Item> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+            .ok_or_else(|| Error::Status {
+                status: 404,
+                path: format!("/repos/{repo}/issues/{number}"),
+                message: "Not Found".into(),
+            })?;
+        item.status = if open { Status::Open } else { Status::Closed };
+        item.updated_at = Utc::now();
+        Ok(item.clone())
+    }
+
+    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number && item.is_pull())
+            .ok_or_else(|| Error::Status {
+                status: 404,
+                path: format!("/repos/{repo}/pulls/{number}"),
+                message: "Not Found".into(),
+            })?;
+        if let Kind::Pull { draft: true, .. } = item.kind {
+            return Err(Error::Status {
+                status: 405,
+                path: format!("/repos/{repo}/pulls/{number}/merge"),
+                message: "Pull Request is still a draft".into(),
+            });
+        }
+        item.kind = Kind::Pull {
+            draft: false,
+            merged: true,
+        };
+        item.status = Status::Closed;
+        item.updated_at = Utc::now();
+        Ok(())
+    }
+
     fn tree(&self, repo: &RepoId) -> Result<Tree> {
         Ok(self.guard()?.trees.get(repo).cloned().unwrap_or(Tree {
             entries: Vec::new(),
@@ -655,6 +724,30 @@ mod tests {
         let assigned = github.search("is:issue assignee:@me is:open").unwrap();
         assert_eq!(assigned.len(), 1);
         assert_eq!(assigned[0].number, 3);
+    }
+
+    #[test]
+    fn writing_changes_what_the_next_read_says() {
+        let github = Scripted::sample();
+        let e1 = RepoId::new("bokuweb", "e1");
+        let before = github.comments(&e1, 2).unwrap().len();
+        let comment = github.comment_on(&e1, 2, "On it.").unwrap();
+        assert_eq!(comment.author.login, "bokuweb", "the viewer wrote it");
+        assert_eq!(github.comments(&e1, 2).unwrap().len(), before + 1);
+        assert_eq!(github.item(&e1, 2).unwrap().comments, Some(1));
+
+        let closed = github.set_open(&e1, 2, false).unwrap();
+        assert_eq!(closed.state(), State::Closed);
+        assert_eq!(github.set_open(&e1, 2, true).unwrap().state(), State::Open);
+
+        // A draft cannot be merged; a ready pull can, and is then merged.
+        assert!(github.merge(&e1, 6).is_err());
+        github.merge(&e1, 7).unwrap();
+        assert_eq!(github.item(&e1, 7).unwrap().state(), State::Merged);
+        assert!(matches!(
+            Scripted::empty().avatar("x"),
+            Err(Error::Unsupported(_))
+        ));
     }
 
     #[test]
