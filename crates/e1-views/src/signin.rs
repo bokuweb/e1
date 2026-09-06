@@ -26,8 +26,6 @@ impl EventEmitter<SignInEvent> for SignIn {}
 enum State {
     /// The button.
     Idle,
-    /// No OAuth app to sign in as; the reader has to use the environment.
-    NoClientId,
     /// Asked GitHub for a code, no answer yet.
     Starting,
     /// The code is on screen and the app is polling.
@@ -66,11 +64,7 @@ impl SignIn {
 
     /// Ask GitHub for a code and poll until it answers.
     fn start(&mut self, cx: &mut Context<Self>) {
-        let Some(client_id) = auth::client_id() else {
-            self.state = State::NoClientId;
-            cx.notify();
-            return;
-        };
+        let client_id = auth::client_id();
         self.attempt += 1;
         let attempt = self.attempt;
         self.state = State::Starting;
@@ -249,12 +243,6 @@ impl Render for SignIn {
                         .text_center()
                         .child(rust_i18n::t!("signin.hint").to_string()),
                 )
-                .into_any_element(),
-            State::NoClientId => div()
-                .text_sm()
-                .text_color(tokens.colors().status_attention)
-                .text_center()
-                .child(rust_i18n::t!("signin.no_client_id").to_string())
                 .into_any_element(),
             State::Starting => div()
                 .text_sm()

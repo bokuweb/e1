@@ -90,19 +90,26 @@ pub fn discover() -> Option<(Token, Source)> {
     resolve(|name| std::env::var(name).ok(), Keychain::load, from_gh)
 }
 
-/// The OAuth app this build signs in as.
+/// The OAuth app e1 signs in as unless told otherwise: registered under
+/// `bokuweb`, with the device flow enabled and nothing else.
 ///
-/// `E1_GITHUB_CLIENT_ID` in the environment wins; failing that, the value
-/// the binary was built with. A client id is public by design — it names
-/// the app, it does not authenticate it — so building it in is safe. `None`
-/// means signing in from the window is not available and the reader has to
-/// use the environment or `gh`.
-pub fn client_id() -> Option<String> {
+/// A client id is public by design — it names the app, it does not
+/// authenticate it, and the device flow has no secret — so it lives in the
+/// source rather than in a secret store.
+pub const DEFAULT_CLIENT_ID: &str = "Ov23liJgXCd2OkbdPkM3";
+
+/// The OAuth app this process signs in as.
+///
+/// `E1_GITHUB_CLIENT_ID` in the environment wins, then the value the binary
+/// was built with, then [`DEFAULT_CLIENT_ID`]. A fork that registers its own
+/// app sets the variable; everyone else signs in as e1.
+pub fn client_id() -> String {
     std::env::var("E1_GITHUB_CLIENT_ID")
         .ok()
         .filter(|id| !id.trim().is_empty())
         .or_else(|| option_env!("E1_GITHUB_CLIENT_ID").map(str::to_string))
         .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
 }
 
 /// The platform keychain, through the `security` command on macOS.
@@ -429,6 +436,14 @@ mod tests {
     fn the_token_does_not_appear_in_debug_output() {
         let token = Token::new("ghp_secret").unwrap();
         assert!(!format!("{token:?}").contains("secret"));
+    }
+
+    #[test]
+    fn there_is_always_an_app_to_sign_in_as() {
+        // The environment may or may not set one; either way the answer is
+        // never empty, so the sign-in screen always has somewhere to go.
+        assert!(!client_id().trim().is_empty());
+        assert!(!DEFAULT_CLIENT_ID.trim().is_empty());
     }
 
     #[test]
