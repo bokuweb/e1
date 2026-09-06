@@ -81,40 +81,42 @@ impl Sidebar {
         self.selected.as_ref()
     }
 
-    /// The app's name, and whose GitHub this is.
+    /// Whose GitHub this is: their picture and their login.
+    ///
+    /// The app's own name is not here. A window's title is the thing it is
+    /// showing, and the person whose inbox this is says more than "e1" would.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
-        let login: SharedString = self
-            .store
-            .read(cx)
-            .viewer()
-            .value()
+        let viewer = self.store.read(cx).viewer().value().cloned();
+        let picture = viewer
+            .as_ref()
+            .and_then(|viewer| self.store.read(cx).avatar(&viewer.avatar_url));
+        let login: SharedString = viewer
+            .as_ref()
             .map(|viewer| viewer.login.clone().into())
             .unwrap_or_else(|| rust_i18n::t!("app.signed_out").to_string().into());
+        let picture = avatar(
+            picture,
+            viewer.as_ref().map(|v| v.login.as_str()).unwrap_or("?"),
+            px(20.),
+            cx,
+        );
         h_flex()
             .w_full()
             .px_3()
             .py_2p5()
             .gap_2()
             .items_center()
-            .child(
-                Icon::empty()
-                    .path(icon::E1)
-                    .size_4()
-                    .flex_shrink_0()
-                    .text_color(tokens.logo()),
-            )
+            .child(picture)
             .child(
                 div()
                     .text_sm()
                     .font_semibold()
-                    .text_color(tokens.colors().text_primary)
-                    .child(rust_i18n::t!("app.name").to_string()),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(tokens.colors().text_muted)
+                    .text_color(if viewer.is_some() {
+                        tokens.colors().text_primary
+                    } else {
+                        tokens.colors().text_muted
+                    })
                     .truncate()
                     .child(login),
             )
