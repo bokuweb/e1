@@ -341,9 +341,10 @@ impl Render for SignIn {
                     .items_center()
                     .gap_5()
                     .child(
-                        Icon::new(IconName::Github)
-                            .size_8()
-                            .text_color(tokens.colors().text_secondary),
+                        Icon::empty()
+                            .path(e1_ui::assets::icon::E1)
+                            .size(px(56.))
+                            .text_color(tokens.logo()),
                     )
                     .child(
                         div()

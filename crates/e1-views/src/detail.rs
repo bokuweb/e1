@@ -6,6 +6,7 @@
 //! rows across every file, and a file's lines are another, so a
 //! thousand-line diff costs what the screen shows (`AGENTS.md` rule 7).
 
+use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
 use e1_github::{Comment, FileStatus};
@@ -15,6 +16,7 @@ use e1_ui::rows::{Glyph, LabelChip};
 use e1_ui::time::age;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::text::TextView;
 use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 use std::collections::HashSet;
@@ -77,13 +79,35 @@ pub struct Detail {
     diff_rows: Vec<DiffRow>,
     /// A file's lines, split once when it lands.
     lines: Vec<SharedString>,
+    /// The comment being written.
+    composer: Entity<TextareaState>,
+    /// Empty the composer at the next frame: clearing needs the window,
+    /// which the answer that asks for it does not have.
+    clear_composer: bool,
+    /// The merge button was pressed once; the next press merges.
+    confirm_merge: bool,
 }
 
 impl Detail {
     /// A detail over a store, showing nothing until told what to.
-    pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&store, |this, _, _: &StoreEvent, cx| this.rebuild(cx))
             .detach();
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder(rust_i18n::t!("detail.comment.placeholder").to_string())
+                .auto_grow(2, 8)
+        });
+        cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
+            // ⌘⏎ sends, the way it does on GitHub; a plain ⏎ is a newline.
+            if let InputEvent::PressEnter {
+                secondary: true, ..
+            } = event
+            {
+                this.send_comment(cx);
+            }
+        })
+        .detach();
         Self {
             store,
             showing: None,
@@ -91,6 +115,47 @@ impl Detail {
             collapsed: HashSet::new(),
             diff_rows: Vec::new(),
             lines: Vec::new(),
+            composer,
+            clear_composer: false,
+            confirm_merge: false,
+        }
+    }
+
+    /// Post what is in the composer.
+    fn send_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(Showing::Item(key)) = self.showing.clone() else {
+            return;
+        };
+        let body = self.composer.read(cx).value().trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+        self.clear_composer = true;
+        self.store
+            .update(cx, |store, cx| store.comment_on(key, body, cx));
+        cx.notify();
+    }
+
+    fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            self.store
+                .update(cx, |store, cx| store.set_open(key, open, cx));
+            cx.notify();
+        }
+    }
+
+    /// Merge, on the second press. The first only arms the button: a merge
+    /// is the one thing here git cannot take back.
+    fn merge(&mut self, cx: &mut Context<Self>) {
+        if !self.confirm_merge {
+            self.confirm_merge = true;
+            cx.notify();
+            return;
+        }
+        self.confirm_merge = false;
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            self.store.update(cx, |store, cx| store.merge(key, cx));
+            cx.notify();
         }
     }
 
@@ -100,6 +165,7 @@ impl Detail {
         if self.showing.as_ref() != Some(&showing) {
             self.tab = Tab::Conversation;
             self.collapsed.clear();
+            self.confirm_merge = false;
         }
         self.showing = Some(showing);
         self.store
@@ -194,6 +260,24 @@ impl Detail {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.diff_rows.clear();
         self.lines.clear();
+        if let Some(Showing::Item(key)) = &self.showing {
+            let urls: Vec<String> = self
+                .store
+                .read(cx)
+                .detail(key)
+                .and_then(|fetch| fetch.value())
+                .map(|detail| {
+                    std::iter::once(detail.item.author.avatar_url.clone())
+                        .chain(detail.comments.iter().map(|c| c.author.avatar_url.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.store.update(cx, |store, cx| {
+                for url in urls {
+                    store.ensure_avatar(&url, cx);
+                }
+            });
+        }
         match &self.showing {
             Some(Showing::Item(key)) if self.tab == Tab::Files => {
                 let files = self
@@ -273,14 +357,12 @@ impl Detail {
     /// One comment: who, when, and what.
     fn comment(&self, comment: &Comment, cx: &App) -> AnyElement {
         let tokens = Tokens::global(cx);
-        let initial: SharedString = comment
-            .author
-            .login
-            .chars()
-            .next()
-            .map(|c| c.to_ascii_uppercase().to_string())
-            .unwrap_or_default()
-            .into();
+        let picture = avatar(
+            self.store.read(cx).avatar(&comment.author.avatar_url),
+            &comment.author.login,
+            px(20.),
+            cx,
+        );
         v_flex()
             .w_full()
             .gap_2()
@@ -288,18 +370,7 @@ impl Detail {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .size_5()
-                            .rounded_full()
-                            .bg(tokens.colors().row_active())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_xs()
-                            .text_color(tokens.colors().text_primary)
-                            .child(initial),
-                    )
+                    .child(picture)
                     .child(
                         div()
                             .text_sm()
@@ -664,14 +735,25 @@ impl Detail {
                                 ),
                         )
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(tokens.colors().text_secondary)
-                                .child(format!(
-                                    "{} · {}",
-                                    item.author.login,
-                                    age(Utc::now(), item.created_at)
-                                )),
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(avatar(
+                                    self.store.read(cx).avatar(&item.author.avatar_url),
+                                    &item.author.login,
+                                    px(18.),
+                                    cx,
+                                ))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(tokens.colors().text_secondary)
+                                        .child(format!(
+                                            "{} · {}",
+                                            item.author.login,
+                                            age(Utc::now(), item.created_at)
+                                        )),
+                                ),
                         )
                         .children(detail.pull.as_ref().map(|pull| {
                             h_flex()
@@ -725,6 +807,7 @@ impl Detail {
                         },
                     )))
                 })
+                .child(self.actions(&key, &detail, cx))
                 .children(tabs);
 
         let body: AnyElement = if showing_files {
@@ -769,7 +852,8 @@ impl Detail {
                                         .child(rust_i18n::t!("detail.comments").to_string()),
                                 )
                                 .children(comments)
-                        }),
+                        })
+                        .child(self.composer(cx)),
                 )
                 .into_any_element()
         };
@@ -778,6 +862,130 @@ impl Detail {
             .size_full()
             .child(head)
             .child(body)
+            .into_any_element()
+    }
+
+    /// A small button in the head.
+    fn action_button(
+        &self,
+        id: &'static str,
+        label: String,
+        loud: bool,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx);
+        div()
+            .id(id)
+            .px_2p5()
+            .py_1()
+            .rounded(px(tokens.radius.row))
+            .cursor_pointer()
+            .text_xs()
+            .when(loud, |this| {
+                this.bg(tokens.colors().accent)
+                    .text_color(tokens.colors().bg_window)
+                    .hover(|this| this.opacity(0.85))
+            })
+            .when(!loud, |this| {
+                this.bg(tokens.colors().bg_surface)
+                    .text_color(tokens.colors().text_primary)
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+            })
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            .into_any_element()
+    }
+
+    /// Close, reopen, merge — and what the last one of those said.
+    fn actions(
+        &self,
+        key: &ItemKey,
+        detail: &crate::store::Detail,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let action = self.store.read(cx).action(key).cloned();
+        let busy = action.as_ref().is_some_and(|action| action.is_loading());
+        let complaint = action
+            .as_ref()
+            .and_then(|action| action.error().map(str::to_string));
+        let item = &detail.item;
+        let open = item.status == e1_github::Status::Open;
+        let merged = matches!(item.kind, e1_github::Kind::Pull { merged: true, .. });
+        let draft = matches!(item.kind, e1_github::Kind::Pull { draft: true, .. });
+        let mergeable = open
+            && !draft
+            && detail
+                .pull
+                .as_ref()
+                .is_some_and(|pull| pull.mergeable != Some(false));
+
+        let mut row = h_flex().gap_2().items_center().flex_wrap();
+        if busy {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .text_color(tokens.colors().text_muted)
+                    .child(rust_i18n::t!("detail.working").to_string()),
+            );
+        } else if !merged {
+            if mergeable {
+                let label = if self.confirm_merge {
+                    rust_i18n::t!("detail.merge.confirm").to_string()
+                } else {
+                    rust_i18n::t!("detail.merge").to_string()
+                };
+                row = row
+                    .child(self.action_button("merge", label, true, cx, |this, cx| this.merge(cx)));
+            }
+            let (label, to_open) = if open {
+                (rust_i18n::t!("detail.close").to_string(), false)
+            } else {
+                (rust_i18n::t!("detail.reopen").to_string(), true)
+            };
+            row =
+                row.child(
+                    self.action_button("toggle-open", label, false, cx, move |this, cx| {
+                        this.set_open(to_open, cx)
+                    }),
+                );
+        }
+        if let Some(complaint) = complaint {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .text_color(tokens.colors().status_error)
+                    .child(complaint),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// The comment box under the conversation.
+    fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        v_flex()
+            .w_full()
+            .gap_2()
+            .pt_2()
+            .child(
+                div()
+                    .w_full()
+                    .rounded(px(tokens.radius.card))
+                    .bg(tokens.colors().bg_surface)
+                    .border_1()
+                    .border_color(tokens.colors().border_subtle)
+                    .p_1()
+                    .child(Textarea::new(&self.composer)),
+            )
+            .child(h_flex().w_full().justify_end().child(self.action_button(
+                "send-comment",
+                rust_i18n::t!("detail.comment.send").to_string(),
+                true,
+                cx,
+                |this, cx| this.send_comment(cx),
+            )))
             .into_any_element()
     }
 
@@ -858,7 +1066,12 @@ impl Detail {
 }
 
 impl Render for Detail {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.clear_composer {
+            self.clear_composer = false;
+            self.composer
+                .update(cx, |composer, cx| composer.set_value("", window, cx));
+        }
         let body = match self.showing.clone() {
             None => self.notice(rust_i18n::t!("detail.empty").to_string(), false, cx),
             Some(Showing::Item(key)) => self.item(key, cx),

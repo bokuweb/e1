@@ -53,10 +53,10 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 ### 3.2 Sidebar — navigation
 
-- **Header** — app name (bold), then the viewer's login muted, or *not signed in*.
+- **Header** — the mark at 16 px in the logo colour, the app name (bold), then the viewer's login muted, or *not signed in*.
 - **Sections** — four fixed rows, each an icon and a label, with a right-aligned count when it is known (unread for the inbox): Inbox, My pulls, Reviews (review requested), Assigned. Selected = `row.active` fill.
 - **Repositories** — a small muted label, then one row per repository the viewer can reach, most recently pushed first: `owner/name` truncated from the left, a lock glyph when private. Picking one lists its pulls; the kind toggle is in the centre strip.
-- **Footer** — avatar initial and login.
+- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, and the sign-out mark.
 
 ### 3.3 Centre — the list, the finder, or a search
 
@@ -73,10 +73,10 @@ An inbox row is the same shape with the reason (`review requested`, `mention`, `
 
 ### 3.4 Right panel — the item
 
-- **Header** — `#number` and the title at 15/500; under it the state glyph and word, the author, and for a pull `base ← head`, `+adds −dels`, `n files`.
+- **Header** — `#number` and the title at 15/500; under it the state glyph and word, the author with their avatar at 18 px, and for a pull `base ← head`, `+adds −dels`, `n files`. Then the actions: *Merge* (filled, only for an open, non-draft pull GitHub does not call unmergeable; the first press arms it as *Merge now?*), and *Close* or *Reopen*. While a write is in flight the row says *Working…*; a refusal is GitHub's own words in `status.error` beside the buttons.
 - **Labels** — the chips from the row.
 - **Body** — markdown at the transcript measure (`TextView::markdown`).
-- **Comments** — a hairline, then each comment as avatar initial, login, age, and its markdown body.
+- **Comments** — a hairline, then each comment as avatar (20 px, or the initial in a tinted circle until it arrives), login, age, and its markdown body. Under the last one, the composer: a card holding a textarea that grows from two to eight rows, and a filled *Comment* button; ⌘⏎ also sends.
 - **Tabs** — for a pull only: *Conversation* and *Files n*, as chips under the header. Files is one virtualized list: each file is a 22 px header row on `bg.raised` (fold chevron, a one-letter status mark in the status colours, the path in mono, `+n −m`) followed by its diff, line-numbered both sides in mono at 12 px, added and removed lines tinted by `status.done` and `status.error` at 12 %, hunk headers on `code.bg`. Everything starts unfolded; a header folds its file.
 - **A file** — when the finder opened one: the path in mono, the repository, size and line count, then the lines in a virtualized list with numbers in the gutter. A binary or oversized file is one sentence and the *Open on GitHub* control.
 - **Markdown** — links in the accent, table heads as a translucent dark band (`black` at 35 %) over the glass with `text.secondary`, rows separated by `border.subtle`, inline code on `bg.surface`.
@@ -86,7 +86,7 @@ Empty state: *Pick something to read* over the glass.
 
 ### 3.5 Sign-in screen
 
-What the centre column is when there is no token: the GitHub mark, *Sign in to GitHub*, one sentence on what the app reads, and one filled button. Pressing it swaps the button for the device code in mono at 24 px inside a card, the address to enter it at, *Open in browser* (which also copies the code) and *Copy code*, and a quiet *Waiting for GitHub…* line. A refusal or an expiry is one sentence in `status.error` with *Try again*. Signing out is the small mark beside the login in the sidebar footer.
+What the centre column is when there is no token: the logo at 56 px, *Sign in to GitHub*, one sentence on what the app reads, and one filled button. Pressing it swaps the button for the device code in mono at 24 px inside a card, the address to enter it at, *Open in browser* (which also copies the code) and *Copy code*, and a quiet *Waiting for GitHub…* line. A refusal or an expiry is one sentence in `status.error` with *Try again*. Signing out is the small mark beside the login in the sidebar footer.
 
 ## 4. Component mapping
 
@@ -104,3 +104,7 @@ What the centre column is when there is no token: the GitHub mark, *Sign in to G
 - Picking a row opens it on the right and never navigates the centre away.
 - Never block: every fetch shows the stale value until the fresh one lands.
 - Truncate repository names and titles from the left only when the tail is the meaningful part (repository names); titles truncate from the right.
+
+## 8. The logo
+
+`assets/icons/e1.svg`: an uppercase `E` and a `1` in strokes at 2.2 on the 24-grid, one colour. It is painted in `Tokens::logo()` — white on the dark theme, navy (`#1E1B4B`) on the light one — which is not a token because no other part of the window uses it and a theme file should not have to name the logo. It sits in the sidebar header at 16 px and on the sign-in screen at 56 px.

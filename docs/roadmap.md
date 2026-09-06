@@ -122,8 +122,14 @@ pub trait GitHub: Send + Sync {
     fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>>; // defaults to Unsupported
     fn tree(&self, repo: &RepoId) -> Result<Tree>;                               // defaults to Unsupported
     fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent>;            // defaults to Unsupported
+    fn avatar(&self, url: &str) -> Result<Vec<u8>>;                              // defaults to Unsupported
+    fn comment_on(&self, repo: &RepoId, number: u64, body: &str) -> Result<Comment>;
+    fn set_open(&self, repo: &RepoId, number: u64, open: bool) -> Result<Item>;
+    fn merge(&self, repo: &RepoId, number: u64) -> Result<()>;                   // all three default to Unsupported
 }
 ```
+
+A write goes through the same trait as a read, and after one lands the store reads the item again rather than patching what it has: the write's answer is partial (a comment, a state) and GitHub's is the whole, which the `ETag` cache makes cheap to ask for.
 
 Small on purpose: every method is one screen's question. Write operations arrive in M2/M3 as new methods with a default `Err(Unsupported)`, so a host implementation that cannot do them yet still compiles.
 
@@ -144,6 +150,8 @@ Two, at two levels, and neither is a database.
 
 Both are cleared on sign-out, because a `304` for the last account's inbox is the last account's inbox. Both are safe to delete at any time.
 
+Avatars are a third, simpler one: GPUI draws an image from a path and this app has no HTTP client the window could hand it, so the store fetches each avatar once through the trait (at 80 px) and keeps it under `~/.e1/cache/avatars/` named by a hash of its URL. Until it is there, the initial in a tinted circle stands in.
+
 ### 4.8 UI stack
 
 `gpui-component` at rev `5a564d4` over `gpui` at zed rev `ef07591`, exactly Ginka's lock. The reasoning is Ginka's (`docs/roadmap.md` §4.6 there) and is not repeated; the additional constraint here is E4. Used from it: `h_resizable`/`resizable_panel`, `Root`, `Icon`, `TextView::markdown`, `Tooltip`, `Input`. Built here: the frameless header strips, the state glyphs, the list rows, the detail header.
@@ -154,8 +162,8 @@ Both are cleared on sign-out, because a `304` for the last account's inbox is th
 | --- | --- | --- |
 | **M0 Shell** | Workspace mirroring Ginka's; tokens, assets, settings, layout persistence; frameless glass window with three resizable columns and draggable header strips; `⌘B`/`⌘⌥B`; en+ja; token discovery; `Scripted` and `E1_DEMO=1` | landed |
 | **M1 Read** | Inbox; the four fixed sections (inbox, my pulls, review requests, assigned); repositories; per-repo pulls and issues, open/closed; detail with markdown body, labels, pull header, comments; open on GitHub; `⌘R` refresh; stale-while-revalidate `Fetch` | landed |
-| **M2 Review** | Pull files and diffs (landed: a Files tab, every diff in one virtualized list, folded per file, `e1_ui::diff`); sign in from the window by device flow, token in the keychain, sign out (landed); the file finder and file reading (landed); search over issues and pulls (landed); the two caches (landed, §4.7); checks summary, review decision, review comments; mark a notification read; polling the inbox | in progress |
-| **M3 Act** | Comment, approve / request changes, merge; assign, label; `⌘K` palette over every action and repository | |
+| **M2 Review** | Pull files and diffs (landed: a Files tab, every diff in one virtualized list, folded per file, `e1_ui::diff`); sign in from the window by device flow, token in the keychain, sign out (landed); the file finder and file reading (landed); search over issues and pulls (landed); the two caches (landed, §4.7); avatars (landed); checks summary, review decision, review comments; mark a notification read; polling the inbox | in progress |
+| **M3 Act** | Comment, close, reopen, merge (landed, from the detail head and a composer under the conversation); approve / request changes; assign, label; edit title and body; `⌘K` palette over every action and repository | in progress |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
 
@@ -189,6 +197,10 @@ Both are cleared on sign-out, because a `304` for the last account's inbox is th
 | 2026-09-05 | A pull's diff is one file at a time, not all at once | Superseded the next day: see below. |
 | 2026-09-06 | A pull's diffs are one virtualized list across every file, each foldable | With the rows in a `uniform_list` a hundred files cost what the screen shows, so the reason to open one at a time went away, and a review reads top to bottom. The file headers are rows of the same height as the lines, which is what lets it be one list. |
 | 2026-09-06 | Answers cached by `ETag`, and the store snapshotted, rather than a local database | Both are dumb and both are enough: a `304` is free and a snapshot makes the first frame full. A database earns its schema when something needs a query across what was fetched, and nothing does yet. |
+| 2026-09-06 | Merge takes two presses; close and comment take one | A merge is the one action here git cannot take back, so the button arms on the first press and says *Merge now?*; a close can be undone with the button beside it, and a comment can be deleted on the web. A modal would be the alternative, and `docs/ui.md` §6 has no modals but destructive confirmations — this is that confirmation, in place. |
+| 2026-09-06 | The logo is one colour — white on dark, navy on light — drawn with `Icon` | Superseding the gradient mark of the same morning: a coloured square read as a badge rather than a mark, and one colour that answers the theme is what every other glyph in the window does. The colour is a method on `Tokens`, not a token, because no theme file should have to name the logo. |
+| 2026-09-06 | The `dev` profile optimises dependencies | A debug GPUI drops frames scrolling fifty rows, and a window that stutters cannot be judged. Dependencies rarely change, so their optimisation is paid once; our crates stay at `opt-level = 1` to keep the edit loop short. |
+| 2026-09-06 | Header strips keep 6 px from their column's edges | The resize handle's grab area overlaps the strips, and a press on it meant for the divider was starting a window move. Insetting the strips is what the toolkit's own handle padding assumes. |
 | 2026-09-06 | The file finder fetches the whole tree in one request and matches locally | One request for twenty thousand paths and then no latency at all beats a request per keystroke. GitHub truncates very large trees and the finder says so. |
 | 2026-09-06 | The OAuth client id is committed | It is public by design: it names the app and authenticates nothing, and the device flow never sees a secret. Keeping it out of the source would only mean every user registering their own app before the sign-in button worked. |
 | 2026-09-05 | `pull_files` has a default `Unsupported` body on the trait | The first method added after the trait shipped, and the pattern for every later one: a host implementation that lags the trait still compiles and the view draws the refusal. |

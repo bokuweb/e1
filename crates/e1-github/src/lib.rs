@@ -142,4 +142,27 @@ pub trait GitHub: Send + Sync {
         let _ = (repo, path);
         Err(Error::Unsupported("read a file"))
     }
+    /// The bytes of an avatar, at a size fit for a row. Not GitHub's API,
+    /// but GitHub's picture, and a host that proxies the API proxies this
+    /// too.
+    fn avatar(&self, url: &str) -> Result<Vec<u8>> {
+        let _ = url;
+        Err(Error::Unsupported("fetch an avatar"))
+    }
+    /// Leave a comment on an item. The answer is the comment as GitHub
+    /// stored it, with its id and time.
+    fn comment_on(&self, repo: &RepoId, number: u64, body: &str) -> Result<Comment> {
+        let _ = (repo, number, body);
+        Err(Error::Unsupported("comment"))
+    }
+    /// Close an item, or open it again. Works for pulls as well as issues.
+    fn set_open(&self, repo: &RepoId, number: u64, open: bool) -> Result<Item> {
+        let _ = (repo, number, open);
+        Err(Error::Unsupported("close or reopen"))
+    }
+    /// Merge a pull. GitHub refuses one that is not mergeable, and says why.
+    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
+        let _ = (repo, number);
+        Err(Error::Unsupported("merge"))
+    }
 }

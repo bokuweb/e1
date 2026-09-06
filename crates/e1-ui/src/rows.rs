@@ -165,6 +165,8 @@ pub struct ItemRow {
     pub unread: bool,
     /// Where it lives on the web, when known.
     pub html_url: Option<String>,
+    /// The author's picture, when the row has an author.
+    pub avatar_url: Option<String>,
 }
 
 /// How many labels a row shows. Three is what fits beside the meta line at
@@ -190,6 +192,7 @@ impl ItemRow {
                 .collect(),
             unread: false,
             html_url: Some(item.html_url.clone()),
+            avatar_url: Some(item.author.avatar_url.clone()),
         }
     }
 
@@ -224,6 +227,7 @@ impl ItemRow {
             labels: Vec::new(),
             unread: notification.unread,
             html_url: notification.html_url(),
+            avatar_url: None,
         }
     }
 }
