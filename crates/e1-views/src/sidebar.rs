@@ -97,7 +97,13 @@ impl Sidebar {
             .py_2p5()
             .gap_2()
             .items_center()
-            .child(img(e1_ui::assets::LOGO).size_4().flex_shrink_0())
+            .child(
+                Icon::empty()
+                    .path(icon::E1)
+                    .size_4()
+                    .flex_shrink_0()
+                    .text_color(tokens.logo()),
+            )
             .child(
                 div()
                     .text_sm()

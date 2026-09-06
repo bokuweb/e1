@@ -53,7 +53,7 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 ### 3.2 Sidebar — navigation
 
-- **Header** — the logo at 16 px, the app name (bold), then the viewer's login muted, or *not signed in*.
+- **Header** — the mark at 16 px in the logo colour, the app name (bold), then the viewer's login muted, or *not signed in*.
 - **Sections** — four fixed rows, each an icon and a label, with a right-aligned count when it is known (unread for the inbox): Inbox, My pulls, Reviews (review requested), Assigned. Selected = `row.active` fill.
 - **Repositories** — a small muted label, then one row per repository the viewer can reach, most recently pushed first: `owner/name` truncated from the left, a lock glyph when private. Picking one lists its pulls; the kind toggle is in the centre strip.
 - **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, and the sign-out mark.
@@ -107,4 +107,4 @@ What the centre column is when there is no token: the logo at 56 px, *Sign in to
 
 ## 8. The logo
 
-`assets/logo.svg`: a 64-grid rounded square (radius 16) filled with the accent-to-working gradient (`#A78BFA` → `#F472B6`, top-left to bottom-right), carrying an `e` and a `1` in white strokes at 5.5 — the `e` an open ring with its bar, the `1` a stem with a short flag. It is drawn with `img`, never `Icon`, so the gradient survives. `assets/icons/e1.svg` is the same mark in one colour on the 24-grid, for places that want an icon.
+`assets/icons/e1.svg`: an uppercase `E` and a `1` in strokes at 2.2 on the 24-grid, one colour. It is painted in `Tokens::logo()` — white on the dark theme, navy (`#1E1B4B`) on the light one — which is not a token because no other part of the window uses it and a theme file should not have to name the logo. It sits in the sidebar header at 16 px and on the sign-in screen at 56 px.

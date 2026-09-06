@@ -340,7 +340,12 @@ impl Render for SignIn {
                     .max_w(px(420.))
                     .items_center()
                     .gap_5()
-                    .child(img(e1_ui::assets::LOGO).size(px(56.)))
+                    .child(
+                        Icon::empty()
+                            .path(e1_ui::assets::icon::E1)
+                            .size(px(56.))
+                            .text_color(tokens.logo()),
+                    )
                     .child(
                         div()
                             .text_xl()

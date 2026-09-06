@@ -190,6 +190,16 @@ impl Tokens {
     pub fn colors(&self) -> &Colors {
         &self.colors
     }
+
+    /// What the logo is painted in: white on the dark theme, navy on the
+    /// light one. Not a token, because it is not a colour the rest of the
+    /// window uses and a theme file should not have to name the logo.
+    pub fn logo(&self) -> Hsla {
+        match self.appearance {
+            ThemeAppearance::Dark => gpui::white(),
+            ThemeAppearance::Light => gpui::rgb(0x1E1B4B).into(),
+        }
+    }
 }
 
 impl Global for Tokens {}
@@ -410,6 +420,14 @@ mod tests {
             Mode::resolve(Appearance::Light, WindowAppearance::Dark),
             Mode::Light
         );
+    }
+
+    #[test]
+    fn the_logo_is_white_on_dark_and_navy_on_light() {
+        assert!(Tokens::load(Mode::Dark).logo().l > 0.99);
+        let navy = Tokens::load(Mode::Light).logo();
+        assert!(navy.l < 0.25, "dark enough to read on the light glass");
+        assert!(navy.s > 0.3, "blue, not grey");
     }
 
     #[test]
