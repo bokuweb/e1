@@ -175,9 +175,6 @@ signin.button:
 signin.hint:
   en: "Or set GITHUB_TOKEN, or run `gh auth login`, and start e1 again."
   ja: "または GITHUB_TOKEN を設定するか `gh auth login` を実行して、e1 を再起動してください。"
-signin.no_client_id:
-  en: "Signing in from the window needs an OAuth app: set E1_GITHUB_CLIENT_ID to its client id, with the device flow enabled."
-  ja: "ウィンドウからのサインインには OAuth App が必要です。Device Flow を有効にした App の client id を E1_GITHUB_CLIENT_ID に設定してください。"
 signin.starting:
   en: Asking GitHub for a code…
   ja: GitHub にコードを要求中…
@@ -205,3 +202,38 @@ signin.expired:
 signin.retry:
   en: Try again
   ja: もう一度
+
+list.files:
+  en: Files
+  ja: ファイル
+files.search:
+  en: Find a file…
+  ja: ファイルを探す…
+files.loading:
+  en: Reading the tree…
+  ja: ツリーを読み込み中…
+files.empty:
+  en: No files match
+  ja: 一致するファイルはありません
+files.truncated:
+  en: This repository is too large to list in full; only the first part is searchable.
+  ja: このリポジトリは大きすぎて全てを一覧できません。先頭の一部のみ検索できます。
+file.too_large:
+  en: This file is binary, or too large to show here.
+  ja: このファイルはバイナリか、ここに表示するには大きすぎます。
+file.loading:
+  en: Reading…
+  ja: 読み込み中…
+file.bytes:
+  en: "%{count} bytes"
+  ja: "%{count} バイト"
+file.lines:
+  en: "%{count} lines"
+  ja: "%{count} 行"
+
+search.title:
+  en: Search
+  ja: 検索
+search.placeholder:
+  en: Search issues and pull requests…
+  ja: Issue と PR を検索…

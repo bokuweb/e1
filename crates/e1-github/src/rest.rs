@@ -4,9 +4,13 @@
 //! async runtime, which is what lets this crate be linked into a host that has
 //! its own (`docs/roadmap.md` E3). Listings follow the `Link: rel="next"`
 //! header up to a page cap, because an unbounded walk of a large
-//! repository's closed issues is a hang, not a feature.
+//! repository's closed issues is a hang, not a feature. With an
+//! [`HttpCache`] attached every answer is kept with its `ETag`, and a
+//! refresh that GitHub answers with `304` is served from disk without
+//! spending the rate limit.
 
 use crate::auth::Token;
+use crate::cache::{Cached, HttpCache};
 use crate::model::*;
 use crate::wire::*;
 use crate::{Error, GitHub, ListKind, Result, StatusFilter};
@@ -30,6 +34,7 @@ pub struct Rest {
     agent: ureq::Agent,
     token: Token,
     base: String,
+    cache: Option<HttpCache>,
 }
 
 impl Rest {
@@ -51,24 +56,44 @@ impl Rest {
             agent: config.into(),
             token,
             base: base.into().trim_end_matches('/').to_string(),
+            cache: None,
         }
+    }
+
+    /// Keep answers in this cache and revalidate them with `If-None-Match`.
+    pub fn with_cache(mut self, cache: HttpCache) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// One GET, decoded. `path` is absolute (`/user`) or, for a `Link`
     /// continuation, a full URL.
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<(T, Option<String>)> {
+        let (body, next) = self.fetch(path)?;
+        let value =
+            serde_json::from_str(&body).map_err(|error| Error::Decode(error.to_string()))?;
+        Ok((value, next))
+    }
+
+    /// One GET, as text, through the cache when there is one.
+    fn fetch(&self, path: &str) -> Result<(String, Option<String>)> {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
             format!("{}{path}", self.base)
         };
-        let mut response = self
+        let cached = self.cache.as_ref().and_then(|cache| cache.load(&url));
+        let mut request = self
             .agent
             .get(&url)
             .header("Authorization", &format!("Bearer {}", self.token.secret()))
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("User-Agent", "e1")
+            .header("User-Agent", "e1");
+        if let Some(cached) = &cached {
+            request = request.header("If-None-Match", &cached.etag);
+        }
+        let mut response = request
             .call()
             .map_err(|error| Error::Transport(error.to_string()))?;
 
@@ -83,6 +108,15 @@ impl Rest {
         let next = header("link").and_then(|link| next_link(&link));
         let remaining = header("x-ratelimit-remaining");
         let reset = header("x-ratelimit-reset");
+        let etag = header("etag");
+
+        if status == 304
+            && let Some(cached) = cached
+        {
+            // Unchanged since the tag: the kept body is the answer, and the
+            // kept `next` is the page after it, which a `304` does not say.
+            return Ok((cached.body, cached.next));
+        }
 
         let body = response
             .body_mut()
@@ -90,9 +124,17 @@ impl Rest {
             .map_err(|error| Error::Transport(error.to_string()))?;
 
         if (200..300).contains(&status) {
-            let value =
-                serde_json::from_str(&body).map_err(|error| Error::Decode(error.to_string()))?;
-            return Ok((value, next));
+            if let (Some(cache), Some(etag)) = (&self.cache, etag) {
+                let kept = Cached {
+                    etag,
+                    body: body.clone(),
+                    next: next.clone(),
+                };
+                if let Err(error) = cache.store(&url, &kept) {
+                    tracing::debug!(%error, "could not keep the answer");
+                }
+            }
+            return Ok((body, next));
         }
         if matches!(status, 403 | 429) && remaining.as_deref() == Some("0") {
             return Err(Error::RateLimited {
@@ -254,6 +296,24 @@ impl GitHub for Rest {
         let path = format!("/repos/{repo}/pulls/{number}/files?per_page=100");
         let pages: Vec<WirePullFile> = self.get_pages(&path)?;
         Ok(pages.into_iter().map(Into::into).collect())
+    }
+
+    fn tree(&self, repo: &RepoId) -> Result<Tree> {
+        // `HEAD` is the default branch without a round trip to ask which.
+        let (tree, _): (WireTree, _) =
+            self.get(&format!("/repos/{repo}/git/trees/HEAD?recursive=1"))?;
+        Ok(tree.into())
+    }
+
+    fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent> {
+        let encoded: String = path
+            .split('/')
+            .map(encode_query)
+            .collect::<Vec<_>>()
+            .join("/");
+        let (contents, _): (WireContents, _) =
+            self.get(&format!("/repos/{repo}/contents/{encoded}"))?;
+        Ok(contents.into_file())
     }
 }
 

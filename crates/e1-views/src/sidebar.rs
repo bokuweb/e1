@@ -57,6 +57,12 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Highlight nothing: a search belongs to no row.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.selected = None;
+        cx.notify();
+    }
+
     /// What is highlighted.
     pub fn selected(&self) -> Option<&Focus> {
         self.selected.as_ref()

@@ -14,7 +14,7 @@ It reads the things a person checks on GitHub between commits — the inbox, the
 
 ## Current state
 
-**M0 and M1 have landed; M2 is under way.** The window opens frameless over a blurred desktop, with the navigation sidebar, the centre list and the right detail panel as resizable columns whose arrangement persists. The GitHub client reads the viewer, the inbox, repositories, pull requests, issues, comments and a pull's files with their diffs over REST, with a scripted fake standing in for it in tests and in `E1_DEMO=1`. A pull's detail has a Files tab that opens one diff at a time. Signing in is GitHub's device flow from the window, with the token kept in the macOS keychain. See `docs/roadmap.md` §5 for what each milestone still owes.
+**M0 and M1 have landed; M2 is under way.** The window opens frameless over a blurred desktop, with the navigation sidebar, the centre list and the right detail panel as resizable columns whose arrangement persists. The GitHub client reads the viewer, the inbox, repositories, pull requests, issues, comments and a pull's files with their diffs over REST, with a scripted fake standing in for it in tests and in `E1_DEMO=1`. A pull's detail has a Files tab whose diffs are one virtualized list across every file. A repository has a file finder (the whole tree in one request, matched locally with `nucleo`) that reads files into the right panel, and the centre strip has a search box over GitHub's issue search. Two caches make it fast: answers are kept on disk with their `ETag`s and revalidated with `If-None-Match`, and the store's memory is written as a snapshot the next launch opens on. Signing in is GitHub's device flow from the window, with the token kept in the macOS keychain. See `docs/roadmap.md` §5 for what each milestone still owes.
 
 ## Commands
 
@@ -22,6 +22,7 @@ It reads the things a person checks on GitHub between commits — the inbox, the
 cargo run                                   # the desktop app; signs in, or uses a token it finds (see below)
 E1_DEMO=1 cargo run                         # the same window over scripted data, no network
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12:src/shell.rs' cargo run   # …opened on a pull's diff, for screenshots
+E1_DEMO=1 E1_DEMO_FILES='bokuweb/e1:src/main.rs' cargo run         # …opened on a repository's finder with a file read
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -30,7 +31,7 @@ cargo test -p e1-github -p e1-ui            # the fast loop: no GPUI build
 
 On a volume without native extended attributes macOS drops `._*` sidecar files next to every file written; `rust-i18n` reads every file in `locales/`, so delete them (`find . -name '._*' -not -path './target/*' -delete`) before a build that fails on `locales/._app.yml`.
 
-The token is looked for in this order: `E1_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, the keychain entry the window wrote when the reader signed in, then whatever `gh auth token` prints. Without one the window opens on the sign-in screen, which runs GitHub's device flow; that needs an OAuth app with the device flow enabled, whose client id is `E1_GITHUB_CLIENT_ID` (at build time or at run time). `E1_HOME` overrides `~/.e1`; `E1_LOG` sets the tracing filter.
+The token is looked for in this order: `E1_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, the keychain entry the window wrote when the reader signed in, then whatever `gh auth token` prints. Without one the window opens on the sign-in screen, which runs GitHub's device flow as the `e1` OAuth app (`e1_github::auth::DEFAULT_CLIENT_ID`, public by design); a fork with its own app sets `E1_GITHUB_CLIENT_ID` at build time or at run time. `E1_HOME` overrides `~/.e1`; `E1_LOG` sets the tracing filter. `~/.e1/cache/` is safe to delete at any time.
 
 ## Layout
 
@@ -60,7 +61,7 @@ These are load-bearing. Each one exists so that Ginka can mount these views late
 4. **One toolkit, at Ginka's rev.** `gpui-component` is the only linked UI library and it owns the `gpui` rev; `Cargo.lock` pins both to what Ginka's lock pins. Two revs of `gpui` are two unrelated sets of types, and a view built against the wrong one cannot be mounted at all. Never pin `gpui` directly; bump the toolkit as its own change, and only to a rev Ginka has moved to.
 5. **Tokens by name, and the same names as Ginka.** No view hardcodes a colour, radius or duration; everything resolves through `e1_ui::Tokens`, whose JSON schema is Ginka's `assets/themes/*.json`. That is what lets the host swap its own tokens in (roadmap §4.3).
 6. **Domain logic belongs in `e1-github` or `e1-ui`, not in `e1-views`.** If it can be tested without a window, it must live where it can be tested without a window. This is also a compiler constraint: `rustc` overflows its stack expanding `#[test]` in a crate that also holds the toolkit's builder chains, so `e1-views` carries no tests at all.
-7. **Streaming and long lists are virtualized from the first commit.** The centre list is a `uniform_list`; a repository with four thousand issues must not cost four thousand elements.
+7. **Streaming and long lists are virtualized from the first commit.** The centre list, the file finder, a pull's diffs and a file's lines are each one `uniform_list`; a repository with four thousand issues or a diff with four thousand lines must not cost four thousand elements.
 8. **Local-first, and the token never touches a plain file.** No feature may require anything but a GitHub token. A token the window obtained goes to the platform keychain and nowhere else; one from the environment or from `gh` is read on every launch and never copied.
 
 ## UI stack

@@ -58,7 +58,11 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 - **Repositories** — a small muted label, then one row per repository the viewer can reach, most recently pushed first: `owner/name` truncated from the left, a lock glyph when private. Picking one lists its pulls; the kind toggle is in the centre strip.
 - **Footer** — avatar initial and login.
 
-### 3.3 Centre — the list
+### 3.3 Centre — the list, the finder, or a search
+
+The centre strip carries chips for a repository — *Pull requests*, *Issues*, *Files* — then *Open*/*Closed* for the two lists, then a search box (240 px) that runs GitHub's issue search on ⏎ and lists the answer with no sidebar row highlighted.
+
+**The finder** (the *Files* chip) is an input over a virtualized list of every file path in the repository, matched fuzzily and case-insensitively as the reader types, the directory muted and the file name in `text.secondary`. Picking a path reads the file into the right panel. When GitHub cut the tree short the finder says so in `status.attention` under the input.
 
 A `uniform_list` of two-line rows at 56 px:
 
@@ -73,7 +77,9 @@ An inbox row is the same shape with the reason (`review requested`, `mention`, `
 - **Labels** — the chips from the row.
 - **Body** — markdown at the transcript measure (`TextView::markdown`).
 - **Comments** — a hairline, then each comment as avatar initial, login, age, and its markdown body.
-- **Tabs** — for a pull only: *Conversation* and *Files n*, as chips under the header. Files lists each file as a one-letter status mark (A/M/D/R in the status colours), the path in mono, and `+n −m`; picking one opens its diff under it, and only one is open at a time. The diff is line-numbered both sides, in mono at 12 px, with added and removed lines tinted by `status.done` and `status.error` at 12 % and hunk headers on `code.bg`; long lines scroll sideways inside the box rather than wrapping the column.
+- **Tabs** — for a pull only: *Conversation* and *Files n*, as chips under the header. Files is one virtualized list: each file is a 22 px header row on `bg.raised` (fold chevron, a one-letter status mark in the status colours, the path in mono, `+n −m`) followed by its diff, line-numbered both sides in mono at 12 px, added and removed lines tinted by `status.done` and `status.error` at 12 %, hunk headers on `code.bg`. Everything starts unfolded; a header folds its file.
+- **A file** — when the finder opened one: the path in mono, the repository, size and line count, then the lines in a virtualized list with numbers in the gutter. A binary or oversized file is one sentence and the *Open on GitHub* control.
+- **Markdown** — links in the accent, table heads as a translucent dark band (`black` at 35 %) over the glass with `text.secondary`, rows separated by `border.subtle`, inline code on `bg.surface`.
 - **Footer** — *Open on GitHub*, in the right strip, which opens the browser; every item is one click from the real thing.
 
 Empty state: *Pick something to read* over the glass.
