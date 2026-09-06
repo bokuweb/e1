@@ -177,11 +177,11 @@ impl SignIn {
             .id(id)
             .px_4()
             .py_2()
-            .rounded(px(tokens.radius.row))
+            .rounded(px(tokens.radius.control()))
             .bg(tokens.colors().accent)
             .hover(|this| this.opacity(0.85))
             .cursor_pointer()
-            .text_sm()
+            .text_size(px(13.))
             .font_medium()
             .text_color(tokens.colors().bg_window)
             .child(label)
@@ -202,11 +202,11 @@ impl SignIn {
             .id(id)
             .px_4()
             .py_2()
-            .rounded(px(tokens.radius.row))
+            .rounded(px(tokens.radius.control()))
             .bg(tokens.colors().bg_surface)
             .hover(|this| this.bg(tokens.colors().row_hover()))
             .cursor_pointer()
-            .text_sm()
+            .text_size(px(13.))
             .text_color(tokens.colors().text_primary)
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
@@ -238,14 +238,14 @@ impl Render for SignIn {
                 ))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(11.5))
                         .text_color(muted)
                         .text_center()
                         .child(rust_i18n::t!("signin.hint").to_string()),
                 )
                 .into_any_element(),
             State::Starting => div()
-                .text_sm()
+                .text_size(px(13.))
                 .text_color(muted)
                 .child(rust_i18n::t!("signin.starting").to_string())
                 .into_any_element(),
@@ -254,13 +254,13 @@ impl Render for SignIn {
                 .gap_3()
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(11.5))
                         .text_color(muted)
                         .child(rust_i18n::t!("signin.enter_code").to_string()),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(px(13.))
                         .text_color(tokens.colors().accent)
                         .child(code.verification_uri.clone()),
                 )
@@ -268,7 +268,7 @@ impl Render for SignIn {
                     div()
                         .px_5()
                         .py_3()
-                        .rounded(px(tokens.radius.card))
+                        .rounded(px(tokens.radius.panel))
                         .bg(tokens.colors().bg_surface)
                         .border_1()
                         .border_color(tokens.colors().border_strong)
@@ -304,7 +304,7 @@ impl Render for SignIn {
                     h_flex()
                         .gap_1p5()
                         .items_center()
-                        .text_xs()
+                        .text_size(px(11.5))
                         .text_color(muted)
                         .child(Icon::new(IconName::LoaderCircle).size_3().text_color(muted))
                         .child(rust_i18n::t!("signin.waiting").to_string()),
@@ -315,7 +315,7 @@ impl Render for SignIn {
                 .gap_3()
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(px(13.))
                         .text_color(tokens.colors().status_error)
                         .text_center()
                         .child(message.clone()),
@@ -355,7 +355,7 @@ impl Render for SignIn {
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(13.))
                             .text_color(tokens.colors().text_secondary)
                             .text_center()
                             .child(rust_i18n::t!("signin.lead").to_string()),

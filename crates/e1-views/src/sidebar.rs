@@ -132,14 +132,14 @@ impl Sidebar {
             .child(
                 div()
                     .flex_1()
-                    .text_sm()
+                    .text_size(px(13.))
                     .text_color(tokens.colors().text_muted)
                     .truncate()
                     .child(owner.to_string()),
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(px(11.5))
                     .text_color(tokens.colors().text_muted)
                     .child(count.to_string()),
             )
@@ -200,7 +200,7 @@ impl Sidebar {
             .child(picture)
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(13.))
                     .font_semibold()
                     .text_color(if viewer.is_some() {
                         tokens.colors().text_primary
@@ -220,7 +220,7 @@ impl Sidebar {
             .px_3()
             .pt_3()
             .pb_1()
-            .text_xs()
+            .text_size(px(11.5))
             .text_color(tokens.colors().text_muted)
             .child(label)
     }
@@ -271,7 +271,7 @@ impl Sidebar {
             .child(
                 div()
                     .flex_1()
-                    .text_sm()
+                    .text_size(px(13.))
                     .when(selected, |this| this.font_medium())
                     .text_color(if selected {
                         tokens.colors().text_primary
@@ -282,7 +282,7 @@ impl Sidebar {
             )
             .children(count.map(|count| {
                 div()
-                    .text_xs()
+                    .text_size(px(11.5))
                     .text_color(if section == Section::Inbox {
                         tokens.colors().accent
                     } else {
@@ -325,7 +325,7 @@ impl Sidebar {
                 h_flex()
                     .flex_1()
                     .overflow_hidden()
-                    .text_sm()
+                    .text_size(px(13.))
                     .when(selected, |this| this.font_medium())
                     .text_color(if selected {
                         tokens.colors().text_primary
@@ -404,7 +404,7 @@ impl Sidebar {
             .child(
                 div()
                     .flex_1()
-                    .text_sm()
+                    .text_size(px(13.))
                     .text_color(tokens.colors().text_secondary)
                     .truncate()
                     .child(login),
@@ -487,7 +487,7 @@ impl Render for Sidebar {
                             div()
                                 .px_3()
                                 .py_1()
-                                .text_xs()
+                                .text_size(px(11.5))
                                 .text_color(match &repos_error {
                                     Some(_) => tokens.colors().status_error,
                                     None => tokens.colors().text_muted,

@@ -342,7 +342,7 @@ impl Detail {
             .px_8()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(13.))
                     .text_color(if error {
                         tokens.colors().status_error
                     } else {
@@ -373,14 +373,14 @@ impl Detail {
                     .child(picture)
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(13.))
                             .font_medium()
                             .text_color(tokens.colors().text_primary)
                             .child(comment.author.login.clone()),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .text_color(tokens.colors().text_muted)
                             .child(age(Utc::now(), comment.created_at)),
                     ),
@@ -388,7 +388,7 @@ impl Detail {
             .child(
                 div()
                     .pl_7()
-                    .text_size(px(15.))
+                    .text_size(px(14.))
                     .line_height(relative(1.6))
                     .child(
                         TextView::markdown(("comment", comment.id as usize), comment.body.clone())
@@ -412,7 +412,7 @@ impl Detail {
                 .py_0p5()
                 .rounded(px(tokens.radius.row - 2.))
                 .cursor_pointer()
-                .text_xs()
+                .text_size(px(11.5))
                 .when(selected, |this| {
                     this.bg(tokens.colors().row_active())
                         .text_color(tokens.colors().text_primary)
@@ -492,7 +492,7 @@ impl Detail {
                     .child(
                         div()
                             .w_3()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .font_family(mono.clone())
                             .text_color(mark_color)
                             .child(status.letter()),
@@ -501,7 +501,7 @@ impl Detail {
                         div()
                             .flex_1()
                             .overflow_hidden()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .font_family(mono)
                             .text_color(tokens.colors().text_primary)
                             .truncate()
@@ -509,13 +509,13 @@ impl Detail {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .text_color(tokens.colors().status_done)
                             .child(format!("+{additions}")),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .text_color(tokens.colors().status_error)
                             .child(format!("−{deletions}")),
                     )
@@ -555,7 +555,7 @@ impl Detail {
                     .px_1()
                     .items_center()
                     .font_family(mono)
-                    .text_xs()
+                    .text_size(px(11.5))
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .when_some(fill, |this, fill| this.bg(fill))
@@ -568,7 +568,7 @@ impl Detail {
             DiffRow::Note(text) => div()
                 .h(DIFF_ROW)
                 .px_3()
-                .text_xs()
+                .text_size(px(11.5))
                 .text_color(tokens.colors().text_muted)
                 .child(text.clone())
                 .into_any_element(),
@@ -587,7 +587,7 @@ impl Detail {
             .px_1()
             .items_center()
             .font_family(mono)
-            .text_xs()
+            .text_size(px(11.5))
             .whitespace_nowrap()
             .overflow_hidden()
             .child(
@@ -698,14 +698,14 @@ impl Detail {
                         .items_baseline()
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(px(13.))
                                 .text_color(muted)
                                 .child(format!("#{}", item.number)),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(15.))
+                                .text_size(px(14.))
                                 .font_medium()
                                 .text_color(tokens.colors().text_primary)
                                 .child(item.title.clone()),
@@ -732,7 +732,7 @@ impl Detail {
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(11.5))
                                         .font_medium()
                                         .text_color(glyph_color)
                                         .child(rust_i18n::t!(glyph.label_key()).to_string()),
@@ -750,7 +750,7 @@ impl Detail {
                                 ))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(11.5))
                                         .text_color(tokens.colors().text_secondary)
                                         .child(format!(
                                             "{} · {}",
@@ -763,7 +763,7 @@ impl Detail {
                             h_flex()
                                 .gap_3()
                                 .items_center()
-                                .text_xs()
+                                .text_size(px(11.5))
                                 .child(
                                     div()
                                         .px_1p5()
@@ -805,7 +805,7 @@ impl Detail {
                                 .py_0p5()
                                 .rounded(px(tokens.radius.row))
                                 .bg(label.fill())
-                                .text_xs()
+                                .text_size(px(11.5))
                                 .text_color(label.color)
                                 .child(label.name.clone())
                         },
@@ -835,13 +835,13 @@ impl Detail {
                         .gap_4()
                         .child(if item.body.trim().is_empty() {
                             div()
-                                .text_sm()
+                                .text_size(px(13.))
                                 .text_color(muted)
                                 .child(rust_i18n::t!("detail.no_body").to_string())
                                 .into_any_element()
                         } else {
                             div()
-                                .text_size(px(15.))
+                                .text_size(px(14.))
                                 .line_height(relative(1.6))
                                 .child(
                                     TextView::markdown(
@@ -859,7 +859,7 @@ impl Detail {
                             this.child(div().h_px().w_full().bg(tokens.colors().border_subtle))
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(11.5))
                                         .text_color(muted)
                                         .child(rust_i18n::t!("detail.comments").to_string()),
                                 )
@@ -891,9 +891,9 @@ impl Detail {
             .id(id)
             .px_2p5()
             .py_1()
-            .rounded(px(tokens.radius.row))
+            .rounded(px(tokens.radius.control()))
             .cursor_pointer()
-            .text_xs()
+            .text_size(px(11.5))
             .when(loud, |this| {
                 this.bg(tokens.colors().accent)
                     .text_color(tokens.colors().bg_window)
@@ -937,7 +937,7 @@ impl Detail {
         if busy {
             row = row.child(
                 div()
-                    .text_xs()
+                    .text_size(px(11.5))
                     .text_color(tokens.colors().text_muted)
                     .child(rust_i18n::t!("detail.working").to_string()),
             );
@@ -966,7 +966,7 @@ impl Detail {
         if let Some(complaint) = complaint {
             row = row.child(
                 div()
-                    .text_xs()
+                    .text_size(px(11.5))
                     .text_color(tokens.colors().status_error)
                     .child(complaint),
             );
@@ -984,7 +984,7 @@ impl Detail {
             .child(
                 div()
                     .w_full()
-                    .rounded(px(tokens.radius.card))
+                    .rounded(px(tokens.radius.control() + 2.))
                     .bg(tokens.colors().bg_surface)
                     .border_1()
                     .border_color(tokens.colors().border_subtle)
@@ -1024,7 +1024,7 @@ impl Detail {
             .border_color(tokens.colors().border_subtle)
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(13.))
                     .font_family(mono.clone())
                     .text_color(tokens.colors().text_primary)
                     .child(key.1.clone()),
@@ -1032,7 +1032,7 @@ impl Detail {
             .child(
                 h_flex()
                     .gap_3()
-                    .text_xs()
+                    .text_size(px(11.5))
                     .text_color(tokens.colors().text_muted)
                     .child(key.0.to_string())
                     .children(content.as_ref().map(|content| {

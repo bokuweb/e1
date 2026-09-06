@@ -43,13 +43,13 @@ Identical to Ginka's `docs/ui.md` §2, from the same `assets/themes/*.json`. The
 | Closed issue | `accent` | circle with a check |
 | Unread notification | `accent` | 6 px dot before the title |
 
-Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, sidebar 250 (200–400), right panel 420 (280–720). The two sized columns are `flex_none`: only the centre grows into what the window has, which is what keeps one divider from moving the other.
+Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, controls (buttons, fields) at 6 — a step under a row, because a control sits inside a card and matching the card's corner reads as a card in a card — sidebar 250 (200–400), right panel 420 (280–720). The two sized columns are `flex_none`: only the centre grows into what the window has, which is what keeps one divider from moving the other.
 
-The palette is Ginka's with the saturation eased a touch (backgrounds ×0.85, accent and status ×0.92, text ×0.9): the same hues, a little less of them, so a full day in the window does not tire.
+The palette is Ginka's with the saturation eased twice over (backgrounds ×0.72, accent and status ×0.83, text ×0.81): the same hues, a good deal less of them, so a full day in the window does not tire. The sidebar is **frosted**: not a second coat of dark over the window (`bg.sidebar` was `#120D19` at 70 %) but a milky tint — white at 6 % on the dark theme — over a window that now lets the desktop through at 72 %, so the left column reads as etched glass beside the clearer centre.
 
 ### Type
 
-The system UI font, at the reference's sizes: sidebar rows and list titles 14 px, metadata 12 px, the detail body and comments 15 px on a 1.6 line height, code and paths in the mono family at 12 px.
+The system UI font, a step under the reference: sidebar rows, list titles and the toolkit's base size 13 px, metadata 11.5 px, the detail body and comments 14 px on a 1.6 line height, code and paths in the mono family at 12 px.
 
 ## 3. Regions
 

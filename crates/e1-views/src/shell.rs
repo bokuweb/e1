@@ -542,7 +542,7 @@ impl Shell {
                             .py_0p5()
                             .rounded(px(tokens.radius.row - 2.))
                             .cursor_pointer()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .when(selected, |this| {
                                 this.bg(tokens.colors().row_active())
                                     .text_color(tokens.colors().text_primary)
@@ -679,14 +679,18 @@ impl Shell {
                     .overflow_hidden()
                     .children(title.map(|title| {
                         div()
-                            .text_sm()
+                            .text_size(px(13.))
                             .font_medium()
                             .text_color(primary)
                             .truncate()
                             .child(title)
                     }))
                     .children(subtitle.map(|subtitle| {
-                        div().text_xs().text_color(muted).truncate().child(subtitle)
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(muted)
+                            .truncate()
+                            .child(subtitle)
                     })),
             )
             .child(

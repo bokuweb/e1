@@ -142,6 +142,15 @@ pub struct Radii {
     pub row: f32,
 }
 
+impl Radii {
+    /// A control — a button, a text field — a step under a row: a control
+    /// sits inside a card whose corner is the larger one, and matching it
+    /// would read as a card in a card.
+    pub fn control(&self) -> f32 {
+        (self.row - 3.).max(2.)
+    }
+}
+
 /// Motion durations: ~260 ms for layout, ~120 ms for feedback.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -331,8 +340,12 @@ pub fn apply(mode: Mode, cx: &mut App) {
     theme.colors.danger = tokens.status_error;
     theme.colors.success = tokens.status_done;
 
-    theme.radius = gpui::px(radii.row);
-    theme.radius_lg = gpui::px(radii.card);
+    theme.radius = gpui::px(radii.control());
+    theme.radius_lg = gpui::px(radii.panel);
+    // The base sizes every toolkit control inherits: 13 px sans and 12 px
+    // mono, a step under the defaults, which is what the reference reads at.
+    theme.font_size = gpui::px(13.);
+    theme.mono_font_size = gpui::px(12.);
 
     // `Root` and several components paint from the derived semantic tokens
     // rather than from `colors`. Without regenerating them the window keeps
@@ -420,6 +433,23 @@ mod tests {
             Mode::resolve(Appearance::Light, WindowAppearance::Dark),
             Mode::Light
         );
+    }
+
+    #[test]
+    fn a_control_is_a_step_under_a_row_and_never_square() {
+        let radii = Tokens::load(Mode::Dark).radius;
+        assert!(radii.control() < radii.row);
+        assert!(radii.control() >= 2.0);
+    }
+
+    #[test]
+    fn the_sidebar_is_a_tint_over_the_glass_not_a_second_coat() {
+        // Frost: the column reads lighter than the window behind it, and
+        // thin enough that the desktop still shows through both.
+        let dark = Tokens::load(Mode::Dark).colors;
+        assert!(dark.bg_sidebar.a < 0.2);
+        assert!(dark.bg_sidebar.l > dark.bg_window.l);
+        assert!(dark.bg_window.a < 0.8);
     }
 
     #[test]

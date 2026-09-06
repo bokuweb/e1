@@ -181,7 +181,7 @@ impl FileBrowser {
                             .flex_1()
                             .overflow_hidden()
                             .font_family(mono)
-                            .text_xs()
+                            .text_size(px(11.5))
                             .children(dir.map(|dir| {
                                 div()
                                     .text_color(tokens.colors().text_muted)
@@ -211,7 +211,7 @@ impl FileBrowser {
             .px_8()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(13.))
                     .text_color(if error {
                         tokens.colors().status_error
                     } else {
@@ -278,7 +278,7 @@ impl Render for FileBrowser {
                     div()
                         .px_4()
                         .py_1()
-                        .text_xs()
+                        .text_size(px(11.5))
                         .text_color(tokens.colors().status_attention)
                         .child(rust_i18n::t!("files.truncated").to_string()),
                 )
