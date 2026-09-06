@@ -19,7 +19,8 @@ It reads the things a person checks on GitHub between commits — the inbox, the
 ## Commands
 
 ```bash
-cargo run                                   # the desktop app; signs in, or uses a token it finds (see below)
+cargo run --release                         # the desktop app; signs in, or uses a token it finds (see below)
+cargo run                                   # the same, in the dev profile: dependencies optimised, ours not
 E1_DEMO=1 cargo run                         # the same window over scripted data, no network
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12:src/shell.rs' cargo run   # …opened on a pull's diff, for screenshots
 E1_DEMO=1 E1_DEMO_FILES='bokuweb/e1:src/main.rs' cargo run         # …opened on a repository's finder with a file read

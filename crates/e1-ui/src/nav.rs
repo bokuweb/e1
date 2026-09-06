@@ -1,6 +1,6 @@
 //! What the sidebar offers, and what the centre column is showing.
 
-use e1_github::{ListKind, RepoId, StatusFilter};
+use e1_github::{ListKind, Repo, RepoId, StatusFilter};
 use serde::{Deserialize, Serialize};
 
 /// The fixed rows at the top of the sidebar.
@@ -227,9 +227,75 @@ impl Focus {
     }
 }
 
+/// One owner's repositories, for the sidebar's tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerGroup {
+    /// The user or organisation.
+    pub owner: String,
+    /// Its repositories, in the order they were given.
+    pub repos: Vec<Repo>,
+}
+
+/// Group repositories under their owner, in order of first appearance.
+///
+/// The list arrives most recently pushed first, so an owner's place in the
+/// tree is where its busiest repository is, and the repositories inside
+/// keep that order too. A person with one organisation sees it at the top;
+/// one with ten sees the ones that moved this week first.
+pub fn group_by_owner(repos: &[Repo]) -> Vec<OwnerGroup> {
+    let mut groups: Vec<OwnerGroup> = Vec::new();
+    for repo in repos {
+        match groups.iter_mut().find(|group| group.owner == repo.id.owner) {
+            Some(group) => group.repos.push(repo.clone()),
+            None => groups.push(OwnerGroup {
+                owner: repo.id.owner.clone(),
+                repos: vec![repo.clone()],
+            }),
+        }
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn repo(owner: &str, name: &str) -> Repo {
+        Repo {
+            id: RepoId::new(owner, name),
+            description: None,
+            private: false,
+            default_branch: "main".into(),
+            stars: 0,
+            open_issues: 0,
+            pushed_at: None,
+            html_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn owners_are_ordered_by_their_first_repository_and_keep_their_own_order() {
+        let repos = [
+            repo("acme", "web"),
+            repo("bokuweb", "e1"),
+            repo("acme", "api"),
+            repo("bokuweb", "ginka"),
+        ];
+        let groups = group_by_owner(&repos);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].owner, "acme");
+        assert_eq!(
+            groups[0]
+                .repos
+                .iter()
+                .map(|r| r.id.name.as_str())
+                .collect::<Vec<_>>(),
+            ["web", "api"]
+        );
+        assert_eq!(groups[1].owner, "bokuweb");
+        assert_eq!(groups[1].repos.len(), 2);
+        assert!(group_by_owner(&[]).is_empty());
+    }
 
     #[test]
     fn every_section_but_the_inbox_is_a_search() {

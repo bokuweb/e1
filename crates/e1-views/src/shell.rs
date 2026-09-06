@@ -14,20 +14,47 @@ use crate::signin::{SignIn, SignInEvent};
 use crate::store::{ItemKey, Store, StoreEvent};
 use e1_github::auth::{Keychain, Source};
 use e1_github::{GitHub, HttpCache, Rest, Scripted, StatusFilter};
-use e1_ui::settings::{self, AppSettings};
+use e1_ui::Mode;
+use e1_ui::settings::{self, AppSettings, Appearance};
 use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, InteractiveElementExt as _, StyledExt as _, h_flex, v_flex};
 use std::sync::Arc;
+use std::time::Instant;
 
 actions!(e1, [ToggleSidebar, ToggleRightPanel, Refresh]);
 
 /// The key context the shell's chords are bound in.
 const CONTEXT: &str = "E1Shell";
+
+/// How wide a column's grab area is, centred on its edge.
+const HANDLE_WIDTH: Pixels = px(9.);
+
+/// The narrowest the centre column is let get.
+const CENTRE_MIN: Pixels = px(320.);
+
+/// A divider being dragged.
+#[derive(Debug, Clone, Copy)]
+struct ColumnDrag {
+    /// Which column is being resized.
+    panel: Panel,
+    /// Where the press was.
+    start_x: Pixels,
+    /// How wide the column was at the press.
+    start_width: Pixels,
+}
+
+/// A column on its way open or closed.
+#[derive(Debug, Clone, Copy)]
+struct Transition {
+    /// When it started.
+    began: Instant,
+    /// Whether it is opening (`true`) or closing.
+    opening: bool,
+}
 
 /// Bind the panel toggles and refresh.
 ///
@@ -65,6 +92,13 @@ pub struct Shell {
     search: Entity<InputState>,
     /// What the centre column was last pointed at.
     current: Option<Focus>,
+    /// The appearance changed and the theme has to be installed at the next
+    /// frame, which is the first place with a window to ask.
+    retheme: bool,
+    /// The divider under the pointer, while one is.
+    resizing: Option<ColumnDrag>,
+    /// Columns mid-way through opening or closing, by panel.
+    transitions: Vec<(Panel, Transition)>,
     /// Whether there is a GitHub to draw. Without one the centre column is
     /// the sign-in screen.
     signed_in: bool,
@@ -139,6 +173,23 @@ impl Shell {
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
             SidebarEvent::SignOut => this.sign_out(cx),
+            SidebarEvent::CycleAppearance => this.cycle_appearance(cx),
+            SidebarEvent::OwnerToggled { owner, collapsed } => {
+                this.settings.collapsed_owners.retain(|o| o != owner);
+                if *collapsed {
+                    this.settings.collapsed_owners.push(owner.clone());
+                }
+                this.persist();
+            }
+        }));
+        // The OS can change its appearance while the window is open; when
+        // the setting is to follow it, the window follows.
+        subscriptions.push(window.observe_window_appearance({
+            let this = cx.entity().downgrade();
+            move |window, cx| {
+                this.update(cx, |this, cx| this.apply_theme(window, cx))
+                    .ok();
+            }
         }));
         subscriptions.push(cx.subscribe(&sign_in, |this, _, event, cx| match event {
             SignInEvent::SignedIn(token) => {
@@ -171,6 +222,10 @@ impl Shell {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_appearance(settings.appearance, cx);
+            sidebar.set_collapsed(settings.collapsed_owners.iter().cloned(), cx);
+        });
 
         let layout = Layout::from_settings(&settings);
         let mut this = Self {
@@ -185,6 +240,9 @@ impl Shell {
             sign_in,
             search,
             current: None,
+            retheme: false,
+            resizing: None,
+            transitions: Vec::new(),
             signed_in,
             token_source,
             focus_handle,
@@ -275,6 +333,32 @@ impl Shell {
         cx.notify();
     }
 
+    /// Dark, then light, then the system's, then dark again.
+    fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
+        self.settings.appearance = match self.settings.appearance {
+            Appearance::Dark => Appearance::Light,
+            Appearance::Light => Appearance::System,
+            Appearance::System => Appearance::Dark,
+        };
+        self.persist();
+        let appearance = self.settings.appearance;
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_appearance(appearance, cx));
+        // The theme needs the window's appearance to resolve `System`, and
+        // a subscription callback has no window; the next frame does.
+        self.retheme = true;
+        cx.notify();
+    }
+
+    /// Install the theme the setting and the OS agree on, and redraw
+    /// everything: the tokens are a global, so every view has to look again.
+    fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = Mode::resolve(self.settings.appearance, window.appearance());
+        e1_ui::theme::apply(mode, cx);
+        window.refresh();
+        cx.notify();
+    }
+
     /// Point the window at the inbox, highlight and all.
     fn open_inbox(&mut self, cx: &mut Context<Self>) {
         let inbox = Focus::Section(e1_ui::Section::Inbox);
@@ -321,7 +405,149 @@ impl Shell {
     fn toggle(&mut self, panel: Panel, cx: &mut Context<Self>) {
         self.layout.toggle(panel);
         self.persist();
+        // The column slides rather than appearing: a panel that pops into
+        // place is a layout jump, and one that slides is a thing moving.
+        self.transitions.retain(|(other, _)| *other != panel);
+        self.transitions.push((
+            panel,
+            Transition {
+                began: Instant::now(),
+                opening: self.layout.is_open(panel),
+            },
+        ));
         cx.notify();
+    }
+
+    /// How wide a column is drawn right now: its width, or a fraction of it
+    /// while it slides. `None` when it is closed and not sliding.
+    fn drawn_width(
+        &mut self,
+        panel: Panel,
+        standard: std::time::Duration,
+        window: &mut Window,
+    ) -> Option<Pixels> {
+        let width = self.layout.size(panel);
+        let mut result = self.layout.is_open(panel).then_some(width);
+        let mut finished = false;
+        if let Some((_, transition)) = self.transitions.iter().find(|(other, _)| *other == panel) {
+            let elapsed = transition.began.elapsed().as_secs_f32();
+            let t: f32 = (elapsed / standard.as_secs_f32()).min(1.0);
+            // Ease out: fast to leave, gentle to land.
+            let eased = 1.0 - (1.0 - t).powi(3);
+            let fraction = if transition.opening {
+                eased
+            } else {
+                1.0 - eased
+            };
+            result = Some(width * fraction).filter(|w| *w > px(0.));
+            if t >= 1.0 {
+                finished = true;
+                result = self.layout.is_open(panel).then_some(width);
+            } else {
+                window.request_animation_frame();
+            }
+        }
+        if finished {
+            self.transitions.retain(|(other, _)| *other != panel);
+        }
+        result
+    }
+
+    /// A divider was pressed.
+    fn begin_resize(&mut self, panel: Panel, at: Pixels, cx: &mut Context<Self>) {
+        self.resizing = Some(ColumnDrag {
+            panel,
+            start_x: at,
+            start_width: self.layout.size(panel),
+        });
+        cx.notify();
+    }
+
+    /// The pointer moved while a divider is held.
+    fn drag_to(&mut self, x: Pixels, window: &Window, cx: &mut Context<Self>) {
+        let Some(drag) = self.resizing else {
+            return;
+        };
+        let delta = x - drag.start_x;
+        // The sidebar's divider is on its right, so the column grows with
+        // `x`; the right panel's is on its left, so it shrinks.
+        let wanted = match drag.panel {
+            Panel::Sidebar => drag.start_width + delta,
+            Panel::RightPanel => drag.start_width - delta,
+        };
+        let (min, max) = match drag.panel {
+            Panel::Sidebar => (px(200.), px(400.)),
+            Panel::RightPanel => (px(280.), px(720.)),
+        };
+        // Neither column may squeeze the centre below its floor.
+        let other = match drag.panel {
+            Panel::Sidebar => self.drawn_or_zero(Panel::RightPanel),
+            Panel::RightPanel => self.drawn_or_zero(Panel::Sidebar),
+        };
+        let room = window.viewport_size().width - other - CENTRE_MIN;
+        let width = wanted.max(min).min(max).min(room.max(min));
+        if width != self.layout.size(drag.panel) {
+            self.layout.set_size(drag.panel, width);
+            cx.notify();
+        }
+    }
+
+    fn drawn_or_zero(&self, panel: Panel) -> Pixels {
+        if self.layout.is_open(panel) {
+            self.layout.size(panel)
+        } else {
+            px(0.)
+        }
+    }
+
+    /// The divider was let go.
+    fn end_resize(&mut self, cx: &mut Context<Self>) {
+        if self.resizing.take().is_some() {
+            self.persist();
+            cx.notify();
+        }
+    }
+
+    /// The grab area on a column's edge.
+    fn handle(&self, panel: Panel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tokens = Tokens::global(cx);
+        let active = self.resizing.is_some_and(|drag| drag.panel == panel);
+        let line = tokens
+            .colors()
+            .accent
+            .opacity(if active { 0.9 } else { 0.5 });
+        let id = match panel {
+            Panel::Sidebar => "handle-sidebar",
+            Panel::RightPanel => "handle-right",
+        };
+        div()
+            .id(id)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(HANDLE_WIDTH)
+            .map(|this| match panel {
+                Panel::Sidebar => this.right(-HANDLE_WIDTH / 2.),
+                Panel::RightPanel => this.left(-HANDLE_WIDTH / 2.),
+            })
+            .cursor_col_resize()
+            .group("handle")
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(HANDLE_WIDTH / 2. - px(0.5))
+                    .w(px(1.))
+                    .when(active, |this| this.bg(line))
+                    .group_hover("handle", |this| this.bg(line)),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.begin_resize(panel, event.position.x, cx);
+                }),
+            )
     }
 
     fn persist(&mut self) {
@@ -329,18 +555,6 @@ impl Shell {
         if let Err(error) = settings::save(&self.paths.app_settings(), &self.settings) {
             tracing::warn!(%error, "could not persist the window's settings");
         }
-    }
-
-    /// Store the sizes a divider drag produced.
-    fn record_resize(
-        &mut self,
-        slots: Vec<Option<Panel>>,
-        state: &Entity<ResizableState>,
-        cx: &mut Context<Self>,
-    ) {
-        let sizes = state.read(cx).sizes().clone();
-        self.layout.record_sizes(&slots, &sizes);
-        self.persist();
     }
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
@@ -490,7 +704,7 @@ impl Shell {
                             .py_0p5()
                             .rounded(px(tokens.radius.row - 2.))
                             .cursor_pointer()
-                            .text_xs()
+                            .text_size(px(11.5))
                             .when(selected, |this| {
                                 this.bg(tokens.colors().row_active())
                                     .text_color(tokens.colors().text_primary)
@@ -627,14 +841,18 @@ impl Shell {
                     .overflow_hidden()
                     .children(title.map(|title| {
                         div()
-                            .text_sm()
+                            .text_size(px(13.))
                             .font_medium()
                             .text_color(primary)
                             .truncate()
                             .child(title)
                     }))
                     .children(subtitle.map(|subtitle| {
-                        div().text_xs().text_color(muted).truncate().child(subtitle)
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(muted)
+                            .truncate()
+                            .child(subtitle)
                     })),
             )
             .child(
@@ -683,12 +901,16 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.retheme {
+            self.retheme = false;
+            self.apply_theme(window, cx);
+        }
         let tokens = Tokens::global(cx).clone();
+        let standard = tokens.duration_ms.standard();
+        let sidebar_width = self.drawn_width(Panel::Sidebar, standard, window);
+        let right_width = self.drawn_width(Panel::RightPanel, standard, window);
         let sidebar_open = self.layout.is_open(Panel::Sidebar);
-        let right_open = self.layout.is_open(Panel::RightPanel);
-        let sidebar_width = self.layout.size(Panel::Sidebar);
-        let right_width = self.layout.size(Panel::RightPanel);
 
         // Built before the column chain: the headers bind listeners, and the
         // chain's own closures hold `self` while they run.
@@ -702,7 +924,7 @@ impl Render for Shell {
                 .into_any_element()
         });
         let column_header = self.column_header(cx).into_any_element();
-        let right_header = right_open.then(|| self.right_header(cx).into_any_element());
+        let right_header = right_width.map(|_| self.right_header(cx).into_any_element());
         let centre: AnyElement = if !self.signed_in {
             self.sign_in.clone().into_any_element()
         } else if self.centre_is_browser(cx) {
@@ -710,6 +932,10 @@ impl Render for Shell {
         } else {
             self.list.clone().into_any_element()
         };
+        let sidebar_handle =
+            sidebar_width.map(|_| self.handle(Panel::Sidebar, cx).into_any_element());
+        let right_handle =
+            right_width.map(|_| self.handle(Panel::RightPanel, cx).into_any_element());
 
         v_flex()
             .key_context(CONTEXT)
@@ -717,62 +943,70 @@ impl Render for Shell {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_right_panel))
             .on_action(cx.listener(Self::on_refresh))
+            // The divider drag is tracked here, at the root, so a pointer
+            // that leaves the divider's few pixels keeps resizing.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                this.drag_to(event.position.x, window, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_resize(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_resize(cx)),
+            )
             .size_full()
             // No background here: `Root` already paints the translucent
             // window and painting it again composites the alpha away.
             .text_color(tokens.colors().text_primary)
             .child(
-                div().flex_1().w_full().overflow_hidden().child(
-                    h_resizable("shell-columns")
-                        .on_resize({
-                            let this = cx.entity();
-                            let slots = self.layout.columns();
-                            move |state, _, cx| {
-                                let slots = slots.clone();
-                                let state = state.clone();
-                                this.update(cx, |this, cx| this.record_resize(slots, &state, cx));
-                            }
-                        })
-                        .when(sidebar_open, |this| {
-                            this.child(
-                                resizable_panel()
-                                    .size(sidebar_width)
-                                    .size_range(px(200.)..px(400.))
-                                    .child(
-                                        v_flex()
-                                            .size_full()
-                                            .children(window_controls)
-                                            .child(self.sidebar.clone())
-                                            .into_any_element(),
-                                    ),
-                            )
-                        })
-                        .child(
-                            resizable_panel().child(
+                h_flex()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .children(sidebar_width.map(|width| {
+                        div()
+                            .w(width)
+                            .h_full()
+                            .flex_shrink_0()
+                            .relative()
+                            .overflow_hidden()
+                            .child(
                                 v_flex()
-                                    .size_full()
-                                    .child(column_header)
-                                    .child(centre)
-                                    .into_any_element(),
-                            ),
-                        )
-                        .when(right_open, |this| {
-                            this.child(
-                                resizable_panel()
-                                    .size(right_width)
-                                    .size_range(px(280.)..px(720.))
-                                    .child(
-                                        v_flex()
-                                            .size_full()
-                                            .border_l_1()
-                                            .border_color(tokens.colors().border_subtle)
-                                            .children(right_header)
-                                            .child(self.detail.clone())
-                                            .into_any_element(),
-                                    ),
+                                    .w(self.layout.size(Panel::Sidebar))
+                                    .h_full()
+                                    .children(window_controls)
+                                    .child(self.sidebar.clone()),
                             )
-                        }),
-                ),
+                            .children(sidebar_handle)
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .min_w(CENTRE_MIN)
+                            .overflow_hidden()
+                            .child(v_flex().size_full().child(column_header).child(centre)),
+                    )
+                    .children(right_width.map(|width| {
+                        div()
+                            .w(width)
+                            .h_full()
+                            .flex_shrink_0()
+                            .relative()
+                            .overflow_hidden()
+                            .child(
+                                v_flex()
+                                    .w(self.layout.size(Panel::RightPanel))
+                                    .h_full()
+                                    .border_l_1()
+                                    .border_color(tokens.colors().border_subtle)
+                                    .children(right_header)
+                                    .child(self.detail.clone()),
+                            )
+                            .children(right_handle)
+                    })),
             )
     }
 }

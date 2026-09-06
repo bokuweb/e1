@@ -19,6 +19,7 @@ pub mod list;
 pub mod shell;
 pub mod sidebar;
 pub mod signin;
+pub mod skeleton;
 pub mod store;
 
 pub use shell::Shell;

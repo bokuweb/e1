@@ -43,7 +43,13 @@ Identical to Ginka's `docs/ui.md` §2, from the same `assets/themes/*.json`. The
 | Closed issue | `accent` | circle with a check |
 | Unread notification | `accent` | 6 px dot before the title |
 
-Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, sidebar 250 (200–400), right panel 420 (280–720).
+Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, controls (buttons, fields) at 6 — a step under a row, because a control sits inside a card and matching the card's corner reads as a card in a card — sidebar 250 (200–400), right panel 420 (280–720). The two sized columns have explicit widths and the centre takes the rest (never under 320 px); a divider is a 9 px grab area centred on the column's edge, with a hairline in the accent while the pointer is over it or holding it. Opening or closing a column slides it over the standard 260 ms with an ease-out cubic.
+
+The palette is Ginka's with the saturation eased twice over (backgrounds ×0.72, accent and status ×0.83, text ×0.81): the same hues, a good deal less of them, so a full day in the window does not tire. The sidebar is **frosted**: not a second coat of dark over the window (`bg.sidebar` was `#120D19` at 70 %) but a milky tint — white at 6 % on the dark theme — over a window that now lets the desktop through at 72 %, so the left column reads as etched glass beside the clearer centre.
+
+### Type
+
+The system UI font, a step under the reference: sidebar rows, list titles and the toolkit's base size 13 px, metadata 11.5 px, the detail body and comments 14 px on a 1.6 line height, code and paths in the mono family at 12 px.
 
 ## 3. Regions
 
@@ -53,10 +59,10 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 ### 3.2 Sidebar — navigation
 
-- **Header** — the mark at 16 px in the logo colour, the app name (bold), then the viewer's login muted, or *not signed in*.
+- **Header** — the viewer's avatar at 20 px (their initial until it arrives) and their login in bold, or *not signed in* muted. No app name and no logo: a window's title is what it is showing, and the person whose inbox this is says more than the app's name would.
 - **Sections** — four fixed rows, each an icon and a label, with a right-aligned count when it is known (unread for the inbox): Inbox, My pulls, Reviews (review requested), Assigned. Selected = `row.active` fill.
-- **Repositories** — a small muted label, then one row per repository the viewer can reach, most recently pushed first: `owner/name` truncated from the left, a lock glyph when private. Picking one lists its pulls; the kind toggle is in the centre strip.
-- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, and the sign-out mark.
+- **Repositories** — a small muted label, then the repositories grouped under their owner, the way the reference groups chats under a project: an owner heading (chevron, the owner's name muted, a count) that folds its group and remembers that it did, and under it one row per repository, indented, the name alone since the heading already says whose, with a lock glyph when private. Owners are ordered by their most recently pushed repository, and the repositories inside the same way. Picking one lists its pulls; the kind toggle is in the centre strip.
+- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, then the appearance control (a moon, a sun, or half of each for *follow the system*; a click moves to the next), and the sign-out mark.
 
 ### 3.3 Centre — the list, the finder, or a search
 
@@ -69,7 +75,7 @@ A `uniform_list` of two-line rows at 56 px:
 1. State glyph, title (truncated), right-aligned `#number`.
 2. Author, age, comment count, and up to three labels as small chips coloured from the label's own colour at 22 % over the glass.
 
-An inbox row is the same shape with the reason (`review requested`, `mention`, `subscribed`) where the author would be, and the unread dot. Empty and error states are one muted line each; loading over a stale list keeps the list and dims nothing — the refresh glyph spins instead.
+An inbox row is the same shape with the reason (`review requested`, `mention`, `subscribed`) where the author would be, and the unread dot. Empty and error states are one muted line each. A *first* load is a skeleton — pulsing bars in the shape of the rows that are coming, in the row tint — and a refresh over a stale list keeps the list and dims nothing; the refresh glyph spins instead. The same holds for the finder, the detail and a diff: each has a skeleton in its own shape.
 
 ### 3.4 Right panel — the item
 
@@ -93,7 +99,7 @@ What the centre column is when there is no token: the logo at 56 px, *Sign in to
 | Region | Component |
 | --- | --- |
 | Window shell | `gpui-component` `Root`, our header strips |
-| Columns | `h_resizable` + `resizable_panel` |
+| Columns | ours: three flex children with explicit widths, a 9 px grab area centred on each divider, and the drag tracked at the window root |
 | List | `gpui::uniform_list` with rows from `e1_ui::rows::ItemRow` |
 | Markdown | `gpui-component` `TextView::markdown` |
 | Tooltips, icons | `gpui-component` primitives; our SVGs in `assets/icons/` for what the toolkit lacks (pull request, merge, issue, comment, lock) |
@@ -107,4 +113,4 @@ What the centre column is when there is no token: the logo at 56 px, *Sign in to
 
 ## 8. The logo
 
-`assets/icons/e1.svg`: an uppercase `E` and a `1` in strokes at 2.2 on the 24-grid, one colour. It is painted in `Tokens::logo()` — white on the dark theme, navy (`#1E1B4B`) on the light one — which is not a token because no other part of the window uses it and a theme file should not have to name the logo. It sits in the sidebar header at 16 px and on the sign-in screen at 56 px.
+`assets/icons/e1.svg`: an uppercase `E` and a `1` in strokes at 2.2 on the 24-grid, one colour. It is painted in `Tokens::logo()` — white on the dark theme, navy (`#1E1B4B`) on the light one — which is not a token because no other part of the window uses it and a theme file should not have to name the logo. It sits on the sign-in screen at 56 px, and nowhere else in the window.
