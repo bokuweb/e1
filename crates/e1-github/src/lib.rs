@@ -7,17 +7,20 @@
 //! implement the trait against (`docs/roadmap.md` §4.3, E2).
 
 pub mod auth;
+pub mod cache;
 pub mod model;
 pub mod rest;
 pub mod scripted;
 mod wire;
 
 pub use auth::{Source, Token};
+pub use cache::HttpCache;
 pub use model::*;
 pub use rest::Rest;
 pub use scripted::Scripted;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Why a request did not produce an answer.
 ///
@@ -63,7 +66,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Which of a repository's lists is wanted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ListKind {
     /// Pull requests.
     Pulls,
@@ -74,7 +77,7 @@ pub enum ListKind {
 }
 
 /// Which items of a list are wanted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum StatusFilter {
     /// Open items only, which is what a list shows first.
     #[default]
@@ -128,5 +131,15 @@ pub trait GitHub: Send + Sync {
     fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>> {
         let _ = (repo, number);
         Err(Error::Unsupported("list a pull's files"))
+    }
+    /// Every path in a repository at its default branch, in one answer.
+    fn tree(&self, repo: &RepoId) -> Result<Tree> {
+        let _ = repo;
+        Err(Error::Unsupported("list a repository's files"))
+    }
+    /// One file at the default branch.
+    fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent> {
+        let _ = (repo, path);
+        Err(Error::Unsupported("read a file"))
     }
 }

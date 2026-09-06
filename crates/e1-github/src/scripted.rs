@@ -32,6 +32,8 @@ struct Data {
     pulls: HashMap<(RepoId, u64), PullExtra>,
     comments: HashMap<(RepoId, u64), Vec<Comment>>,
     files: HashMap<(RepoId, u64), Vec<PullFile>>,
+    trees: HashMap<RepoId, Tree>,
+    contents: HashMap<(RepoId, String), String>,
     /// When set, every call fails with this. For testing the error states.
     failing: Option<String>,
 }
@@ -119,6 +121,52 @@ impl Scripted {
         self
     }
 
+    /// A repository's files, as paths with sizes.
+    pub fn with_tree(self, repo: &RepoId, paths: &[(&str, u64)]) -> Self {
+        let mut dirs: Vec<String> = Vec::new();
+        let mut entries = Vec::new();
+        for (path, size) in paths {
+            let mut prefix = String::new();
+            for part in path.split('/').take(path.matches('/').count()) {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(part);
+                if !dirs.contains(&prefix) {
+                    dirs.push(prefix.clone());
+                    entries.push(TreeEntry {
+                        path: prefix.clone(),
+                        kind: EntryKind::Tree,
+                        size: None,
+                    });
+                }
+            }
+            entries.push(TreeEntry {
+                path: path.to_string(),
+                kind: EntryKind::Blob,
+                size: Some(*size),
+            });
+        }
+        self.data.lock().unwrap().trees.insert(
+            repo.clone(),
+            Tree {
+                entries,
+                truncated: false,
+            },
+        );
+        self
+    }
+
+    /// What a file says.
+    pub fn with_file(self, repo: &RepoId, path: &str, text: &str) -> Self {
+        self.data
+            .lock()
+            .unwrap()
+            .contents
+            .insert((repo.clone(), path.to_string()), text.to_string());
+        self
+    }
+
     /// An inbox row.
     pub fn with_notification(self, notification: Notification) -> Self {
         self.data.lock().unwrap().notifications.push(notification);
@@ -173,7 +221,7 @@ impl Scripted {
                 }
             ),
             body: format!(
-                "## Summary\n\nThis is *scripted* data for **{title}**.\n\n- one thing\n- another thing\n\n```rust\nfn main() {{ println!(\"hello\"); }}\n```"
+                "## Summary\n\nThis is *scripted* data for **{title}**, see [the roadmap](https://github.com/bokuweb/e1/blob/main/docs/roadmap.md) and `E1_DEMO=1`.\n\n- one thing\n- another thing\n\n| item | count |\n| --- | ---: |\n| pass | 146 |\n| change | 0 |\n\n```rust\nfn main() {{ println!(\"hello\"); }}\n```"
             ),
         };
         let open = Kind::Pull {
@@ -274,6 +322,16 @@ impl Scripted {
                 file("crates/e1-ui/src/settings.rs", FileStatus::Modified, 1, 0, Some("@@ -18,4 +18,5 @@ pub struct AppSettings {\n     pub right_panel_width: f32,\n+    pub bounds: Option<WindowBounds>,\n     pub locale: Option<String>,\n     pub last_repo: Option<String>,\n }")),
                 file("assets/icons/window.svg", FileStatus::Added, 0, 0, None),
             ])
+            .with_tree(&e1, &[
+                ("Cargo.toml", 1200), ("AGENTS.md", 6000), ("src/main.rs", 4100),
+                ("crates/e1-github/src/lib.rs", 3900), ("crates/e1-github/src/rest.rs", 9000),
+                ("crates/e1-ui/src/theme.rs", 12000), ("crates/e1-views/src/shell.rs", 20000),
+                ("docs/roadmap.md", 15000), ("docs/ui.md", 9000), ("assets/icons/lock.svg", 300),
+            ])
+            .with_file(&e1, "src/main.rs", "//! The e1 desktop app.\n\nfn main() {\n    println!(\"hello from scripted data\");\n}\n")
+            .with_file(&e1, "Cargo.toml", "[package]\nname = \"e1\"\nversion = \"0.0.0\"\nedition = \"2024\"\n")
+            .with_tree(&ginka, &[("Cargo.toml", 2000), ("src/main.rs", 3000), ("src/shell.rs", 90000), ("docs/roadmap.md", 40000)])
+            .with_file(&ginka, "src/main.rs", "//! The Ginka desktop app.\n\nfn main() {}\n")
             .with_files(&ginka, 12, vec![
                 file("src/shell.rs", FileStatus::Modified, 300, 30, Some(patch)),
                 file("crates/ginka-core/src/project.rs", FileStatus::Modified, 80, 8, Some("@@ -1,3 +1,4 @@\n+//! Projects, and the scratch one a chat starts in.\n use std::path::PathBuf;\n \n pub struct Project {")),
@@ -496,6 +554,33 @@ impl GitHub for Scripted {
             .cloned()
             .unwrap_or_default())
     }
+
+    fn tree(&self, repo: &RepoId) -> Result<Tree> {
+        Ok(self.guard()?.trees.get(repo).cloned().unwrap_or(Tree {
+            entries: Vec::new(),
+            truncated: false,
+        }))
+    }
+
+    fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent> {
+        let data = self.guard()?;
+        let text = data
+            .contents
+            .get(&(repo.clone(), path.to_string()))
+            .cloned();
+        let size = data
+            .trees
+            .get(repo)
+            .and_then(|tree| tree.entries.iter().find(|entry| entry.path == path))
+            .and_then(|entry| entry.size)
+            .unwrap_or(0);
+        Ok(FileContent {
+            path: path.to_string(),
+            size,
+            text,
+            html_url: format!("{}/blob/main/{path}", repo.html_url()),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +619,23 @@ mod tests {
         let files = github.pull_files(&pull.item.repo, 12).unwrap();
         assert_eq!(files.len(), 3);
         assert!(files[0].patch.is_some());
+
+        let tree = github.tree(&e1).unwrap();
+        assert!(
+            tree.entries
+                .iter()
+                .any(|e| e.path == "crates" && e.kind == EntryKind::Tree)
+        );
+        assert!(tree.files().any(|e| e.path == "src/main.rs"));
+        let file = github.file(&e1, "src/main.rs").unwrap();
+        assert!(file.text.unwrap().contains("fn main"));
+        assert!(
+            github
+                .file(&e1, "assets/icons/lock.svg")
+                .unwrap()
+                .text
+                .is_none()
+        );
     }
 
     #[test]

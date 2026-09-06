@@ -44,9 +44,26 @@ impl Paths {
         self.root.join("logs")
     }
 
+    /// What GitHub said, kept: safe to delete at any time.
+    pub fn cache(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    /// Answers with their `ETag`s, one file per URL.
+    pub fn http_cache(&self) -> PathBuf {
+        self.cache().join("http")
+    }
+
+    /// The store's memory for the next launch.
+    pub fn snapshot(&self) -> PathBuf {
+        self.cache().join("store.json")
+    }
+
     /// Create the directories, which is safe to repeat.
     pub fn ensure(&self) -> Result<()> {
-        std::fs::create_dir_all(self.logs())
-            .with_context(|| format!("creating {}", self.logs().display()))
+        for dir in [self.logs(), self.http_cache()] {
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        Ok(())
     }
 }

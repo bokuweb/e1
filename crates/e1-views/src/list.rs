@@ -151,7 +151,7 @@ impl ItemList {
         let selected = row.key.is_some() && self.selected == row.key;
         let glyph_color = row.glyph.role().color(tokens.colors());
         // Lists that span repositories say which one each row is from.
-        let spans_repos = matches!(self.focus, Some(Focus::Section(_)));
+        let spans_repos = matches!(self.focus, Some(Focus::Section(_) | Focus::Search { .. }));
 
         div()
             .h(ROW_HEIGHT)

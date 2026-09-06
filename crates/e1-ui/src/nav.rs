@@ -1,9 +1,10 @@
 //! What the sidebar offers, and what the centre column is showing.
 
 use e1_github::{ListKind, RepoId, StatusFilter};
+use serde::{Deserialize, Serialize};
 
 /// The fixed rows at the top of the sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Section {
     /// Unread notifications.
     Inbox,
@@ -59,7 +60,7 @@ impl Section {
 }
 
 /// What the centre column lists.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Focus {
     /// One of the fixed sections.
     Section(Section),
@@ -72,9 +73,97 @@ pub enum Focus {
         /// Open, closed, or all.
         status: StatusFilter,
     },
+    /// A repository's files, found by path.
+    Files {
+        /// Which repository.
+        repo: RepoId,
+    },
+    /// Items matching a search the reader typed.
+    Search {
+        /// The query, in GitHub's search syntax.
+        query: String,
+    },
+}
+
+/// The three things the centre column can show for a repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoTab {
+    /// Pull requests.
+    Pulls,
+    /// Issues.
+    Issues,
+    /// The file finder.
+    Files,
+}
+
+impl RepoTab {
+    /// All three, in the order the chips show them.
+    pub const ALL: &'static [RepoTab] = &[RepoTab::Pulls, RepoTab::Issues, RepoTab::Files];
+
+    /// The locale key for the chip.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Pulls => "list.pulls",
+            Self::Issues => "list.issues",
+            Self::Files => "list.files",
+        }
+    }
 }
 
 impl Focus {
+    /// A repository's file finder.
+    pub fn files(repo: RepoId) -> Self {
+        Self::Files { repo }
+    }
+
+    /// A search.
+    pub fn search(query: impl Into<String>) -> Self {
+        Self::Search {
+            query: query.into(),
+        }
+    }
+
+    /// Which tab a repository focus is on, or `None` for anything else.
+    pub fn repo_tab(&self) -> Option<RepoTab> {
+        match self {
+            Self::Repo { kind, .. } => Some(match kind {
+                ListKind::Pulls => RepoTab::Pulls,
+                ListKind::Issues => RepoTab::Issues,
+            }),
+            Self::Files { .. } => Some(RepoTab::Files),
+            Self::Section(_) | Self::Search { .. } => None,
+        }
+    }
+
+    /// The same repository, on another tab. The status is kept when both
+    /// tabs have one and starts open otherwise.
+    pub fn with_tab(&self, tab: RepoTab) -> Option<Self> {
+        let repo = self.repo_id()?.clone();
+        let status = match self {
+            Self::Repo { status, .. } => *status,
+            _ => StatusFilter::Open,
+        };
+        Some(match tab {
+            RepoTab::Pulls => Self::Repo {
+                repo,
+                kind: ListKind::Pulls,
+                status,
+            },
+            RepoTab::Issues => Self::Repo {
+                repo,
+                kind: ListKind::Issues,
+                status,
+            },
+            RepoTab::Files => Self::Files { repo },
+        })
+    }
+
+    /// Whether the store answers this focus with a list of items. The file
+    /// finder is not a list and a search is.
+    pub fn is_list(&self) -> bool {
+        !matches!(self, Self::Files { .. })
+    }
+
     /// A repository's open pulls, which is what picking a repository shows
     /// first.
     pub fn repo(repo: RepoId) -> Self {
@@ -93,7 +182,7 @@ impl Focus {
                 kind,
                 status: *status,
             }),
-            Self::Section(_) => None,
+            _ => None,
         }
     }
 
@@ -105,15 +194,15 @@ impl Focus {
                 kind: *kind,
                 status,
             }),
-            Self::Section(_) => None,
+            _ => None,
         }
     }
 
     /// The repository, when the focus is one.
     pub fn repo_id(&self) -> Option<&RepoId> {
         match self {
-            Self::Repo { repo, .. } => Some(repo),
-            Self::Section(_) => None,
+            Self::Repo { repo, .. } | Self::Files { repo } => Some(repo),
+            Self::Section(_) | Self::Search { .. } => None,
         }
     }
 
@@ -121,7 +210,8 @@ impl Focus {
     pub fn title(&self) -> String {
         match self {
             Self::Section(section) => rust_i18n::t!(section.label_key()).to_string(),
-            Self::Repo { repo, .. } => repo.to_string(),
+            Self::Repo { repo, .. } | Self::Files { repo } => repo.to_string(),
+            Self::Search { query } => query.clone(),
         }
     }
 
@@ -129,13 +219,10 @@ impl Focus {
     pub fn subtitle(&self) -> Option<String> {
         match self {
             Self::Section(_) => None,
-            Self::Repo { kind, .. } => Some(
-                rust_i18n::t!(match kind {
-                    ListKind::Pulls => "list.pulls",
-                    ListKind::Issues => "list.issues",
-                })
-                .to_string(),
-            ),
+            Self::Repo { .. } | Self::Files { .. } => self
+                .repo_tab()
+                .map(|tab| rust_i18n::t!(tab.label_key()).to_string()),
+            Self::Search { .. } => Some(rust_i18n::t!("search.title").to_string()),
         }
     }
 }
@@ -176,6 +263,51 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_tabs_walk_a_repository_and_keep_the_status_between_the_two_lists() {
+        let repo = RepoId::new("o", "r");
+        let closed = Focus::repo(repo.clone())
+            .with_status(StatusFilter::Closed)
+            .unwrap();
+        let files = closed.with_tab(RepoTab::Files).unwrap();
+        assert_eq!(files, Focus::files(repo.clone()));
+        assert_eq!(files.repo_tab(), Some(RepoTab::Files));
+        assert!(!files.is_list());
+        // Back to a list: open, because the finder had no status to keep.
+        let issues = files.with_tab(RepoTab::Issues).unwrap();
+        assert!(matches!(
+            issues,
+            Focus::Repo {
+                status: StatusFilter::Open,
+                ..
+            }
+        ));
+        // Between the two lists the status survives.
+        let issues = closed.with_tab(RepoTab::Issues).unwrap();
+        assert!(matches!(
+            issues,
+            Focus::Repo {
+                kind: ListKind::Issues,
+                status: StatusFilter::Closed,
+                ..
+            }
+        ));
+        assert_eq!(
+            Focus::Section(Section::Inbox).with_tab(RepoTab::Files),
+            None
+        );
+    }
+
+    #[test]
+    fn a_search_is_a_list_titled_by_its_query() {
+        rust_i18n::set_locale("en");
+        let focus = Focus::search("is:pr label:bug");
+        assert!(focus.is_list());
+        assert_eq!(focus.title(), "is:pr label:bug");
+        assert_eq!(focus.subtitle().as_deref(), Some("Search"));
+        assert_eq!(focus.repo_id(), None);
     }
 
     #[test]

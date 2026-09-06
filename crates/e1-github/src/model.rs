@@ -5,10 +5,11 @@
 //! would be re-deciding what to show every time GitHub grew a field.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// `owner/name`: the key every repository-scoped thing hangs off.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RepoId {
     /// The user or organisation.
     pub owner: String,
@@ -61,7 +62,7 @@ impl fmt::Display for RepoId {
 }
 
 /// A repository the viewer can reach.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repo {
     /// Its key.
     pub id: RepoId,
@@ -82,7 +83,7 @@ pub struct Repo {
 }
 
 /// A GitHub account, as it appears on an item.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     /// The login, which is what is shown; GitHub does not send display names
     /// on items.
@@ -92,7 +93,7 @@ pub struct User {
 }
 
 /// Who the token is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Viewer {
     /// The login, used in the sidebar and in search queries (`author:login`).
     pub login: String,
@@ -103,7 +104,7 @@ pub struct Viewer {
 }
 
 /// A label on an item.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Label {
     /// The text.
     pub name: String,
@@ -112,7 +113,7 @@ pub struct Label {
 }
 
 /// What kind of thing a notification is about.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubjectKind {
     /// A pull request.
     PullRequest,
@@ -146,7 +147,7 @@ impl SubjectKind {
 }
 
 /// One inbox row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     /// GitHub's thread id, which is what marking it read will take.
     pub id: String,
@@ -184,7 +185,7 @@ impl Notification {
 }
 
 /// Whether an item is a pull or an issue, and what only a pull can be.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     /// An issue.
     Issue,
@@ -199,7 +200,7 @@ pub enum Kind {
 }
 
 /// Open or closed, as the wire says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     /// Open.
     Open,
@@ -208,7 +209,7 @@ pub enum Status {
 }
 
 /// The state a row draws, which is the wire's status refined by the kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum State {
     /// An open issue or a ready pull.
     Open,
@@ -224,7 +225,7 @@ pub enum State {
 ///
 /// One type for both because every list and every header draws them the same
 /// way; the state glyph is the one difference, and [`Kind`] carries it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     /// The repository.
     pub repo: RepoId,
@@ -274,7 +275,7 @@ impl Item {
 }
 
 /// A pull request with what only a pull has.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pull {
     /// Everything it shares with an issue.
     pub item: Item,
@@ -294,7 +295,7 @@ pub struct Pull {
 }
 
 /// One entry of an item's timeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     /// GitHub's id.
     pub id: u64,
@@ -431,7 +432,7 @@ mod tests {
 }
 
 /// What happened to a file in a pull request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileStatus {
     /// New in this pull.
     Added,
@@ -470,7 +471,7 @@ impl FileStatus {
 }
 
 /// One file of a pull request's diff.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullFile {
     /// The path after the pull.
     pub filename: String,
@@ -485,4 +486,59 @@ pub struct PullFile {
     /// The unified diff, without the `---`/`+++` header. `None` for a
     /// binary file or one too large for GitHub to send.
     pub patch: Option<String>,
+}
+
+/// Whether a tree entry is a file or a directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryKind {
+    /// A file.
+    Blob,
+    /// A directory.
+    Tree,
+    /// A submodule or a symlink: listed, not opened.
+    Other,
+}
+
+/// One path in a repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeEntry {
+    /// The path from the repository root.
+    pub path: String,
+    /// File or directory.
+    pub kind: EntryKind,
+    /// Bytes, for a file.
+    pub size: Option<u64>,
+}
+
+/// A repository's whole tree at its default branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tree {
+    /// Every path, files and directories, in GitHub's order.
+    pub entries: Vec<TreeEntry>,
+    /// GitHub stops listing very large repositories part way through and
+    /// says so; the finder tells the reader.
+    pub truncated: bool,
+}
+
+impl Tree {
+    /// The files only, which is what a finder searches.
+    pub fn files(&self) -> impl Iterator<Item = &TreeEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Blob)
+    }
+}
+
+/// A file, read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileContent {
+    /// The path.
+    pub path: String,
+    /// Bytes.
+    pub size: u64,
+    /// The text, when the file is text and small enough for GitHub to
+    /// send inline. `None` for a binary file or one over GitHub's limit.
+    pub text: Option<String>,
+    /// Where it lives on the web, for the cases `text` cannot cover.
+    pub html_url: String,
 }

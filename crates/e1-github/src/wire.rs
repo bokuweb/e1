@@ -370,6 +370,84 @@ impl From<WirePullFile> for PullFile {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireTreeEntry {
+    pub path: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+/// What `/git/trees/{ref}?recursive=1` sends.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireTree {
+    #[serde(default)]
+    pub tree: Vec<WireTreeEntry>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl From<WireTree> for Tree {
+    fn from(tree: WireTree) -> Self {
+        Self {
+            entries: tree
+                .tree
+                .into_iter()
+                .map(|entry| TreeEntry {
+                    kind: match entry.kind.as_str() {
+                        "blob" => EntryKind::Blob,
+                        "tree" => EntryKind::Tree,
+                        _ => EntryKind::Other,
+                    },
+                    path: entry.path,
+                    size: entry.size,
+                })
+                .collect(),
+            truncated: tree.truncated,
+        }
+    }
+}
+
+/// What `/contents/{path}` sends for a file.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireContents {
+    pub path: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub encoding: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl WireContents {
+    /// Decode what GitHub sent. Base64 with newlines in it, or nothing at
+    /// all above a megabyte; either way a file that is not UTF-8 is binary
+    /// and is offered on the web instead.
+    pub fn into_file(self) -> FileContent {
+        use base64::Engine as _;
+        let text = match (self.encoding.as_deref(), self.content.as_deref()) {
+            (Some("base64"), Some(content)) if !content.is_empty() => {
+                let stripped: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+                base64::engine::general_purpose::STANDARD
+                    .decode(stripped)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+            }
+            _ => None,
+        };
+        FileContent {
+            path: self.path,
+            size: self.size,
+            text,
+            html_url: self.html_url,
+        }
+    }
+}
+
 /// GitHub's `message` on an error body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireMessage {
@@ -503,6 +581,40 @@ mod tests {
         assert_eq!(files[1].status, FileStatus::Renamed);
         assert_eq!(files[1].previous_filename.as_deref(), Some("src/old.rs"));
         assert!(files[1].patch.as_deref().unwrap().starts_with("@@"));
+    }
+
+    #[test]
+    fn a_tree_keeps_files_and_directories_apart_and_says_when_it_was_cut_short() {
+        let json = r#"{"tree":[{"path":"src","type":"tree"},{"path":"src/main.rs","type":"blob","size":12}],"truncated":true}"#;
+        let tree: Tree = serde_json::from_str::<WireTree>(json).unwrap().into();
+        assert!(tree.truncated);
+        let files: Vec<_> = tree.files().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].size, Some(12));
+    }
+
+    #[test]
+    fn a_file_is_decoded_from_base64_with_newlines_and_a_binary_one_is_not_text() {
+        let json = r#"{"path":"a.txt","size":11,"encoding":"base64","content":"aGVsbG8g\nd29ybGQ=\n","html_url":"https://github.com/o/r/blob/main/a.txt"}"#;
+        let file = serde_json::from_str::<WireContents>(json)
+            .unwrap()
+            .into_file();
+        assert_eq!(file.text.as_deref(), Some("hello world"));
+
+        let json =
+            r#"{"path":"a.png","size":3,"encoding":"base64","content":"/9j/","html_url":""}"#;
+        let file = serde_json::from_str::<WireContents>(json)
+            .unwrap()
+            .into_file();
+        assert_eq!(file.text, None, "not utf-8");
+
+        let json =
+            r#"{"path":"big.bin","size":5000000,"encoding":"none","content":"","html_url":""}"#;
+        let file = serde_json::from_str::<WireContents>(json)
+            .unwrap()
+            .into_file();
+        assert_eq!(file.text, None, "too large for the contents endpoint");
     }
 
     #[test]

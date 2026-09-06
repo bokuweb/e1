@@ -6,17 +6,19 @@
 //! views are embedded. Everything under it — the sidebar, the list, the
 //! detail — is mounted here exactly the way a host would mount it.
 
+use crate::browser::{BrowserEvent, FileBrowser};
 use crate::detail::Detail;
 use crate::list::{ItemEvent, ItemList};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::signin::{SignIn, SignInEvent};
 use crate::store::{ItemKey, Store, StoreEvent};
 use e1_github::auth::{Keychain, Source};
-use e1_github::{GitHub, ListKind, Rest, Scripted, StatusFilter};
+use e1_github::{GitHub, HttpCache, Rest, Scripted, StatusFilter};
 use e1_ui::settings::{self, AppSettings};
-use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, TRAFFIC_LIGHT_INSET, Tokens};
+use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, InteractiveElementExt as _, StyledExt as _, h_flex, v_flex};
@@ -57,7 +59,12 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     list: Entity<ItemList>,
     detail: Entity<Detail>,
+    browser: Entity<FileBrowser>,
     sign_in: Entity<SignIn>,
+    /// The search box in the centre strip.
+    search: Entity<InputState>,
+    /// What the centre column was last pointed at.
+    current: Option<Focus>,
     /// Whether there is a GitHub to draw. Without one the centre column is
     /// the sign-in screen.
     signed_in: bool,
@@ -87,27 +94,60 @@ impl Shell {
     ) -> Self {
         let signed_in = github.is_some();
         let source: Arc<dyn GitHub> = github.unwrap_or_else(|| Arc::new(Scripted::empty()));
-        let store = cx.new(|_| Store::new(source));
+        let snapshot = paths.snapshot();
+        let store = cx.new(|_| {
+            let store = Store::new(source);
+            // A window that opens signed out must not read a snapshot that
+            // belongs to whoever was signed in before.
+            if signed_in {
+                store.with_snapshot(snapshot)
+            } else {
+                store.remembering(snapshot)
+            }
+        });
         let sign_in = cx.new(|_| SignIn::new());
+        let browser = cx.new(|cx| FileBrowser::new(store.clone(), window, cx));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(rust_i18n::t!("search.placeholder").to_string())
+        });
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let list = cx.new(|cx| ItemList::new(store.clone(), cx));
         let detail = cx.new(|cx| Detail::new(store.clone(), cx));
 
         let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(&browser, |this, _, event, cx| match event {
+            BrowserEvent::Open { repo, path } => {
+                let key = (repo.clone(), path.clone());
+                this.detail
+                    .update(cx, |detail, cx| detail.show_file(key, cx));
+                if !this.layout.is_open(Panel::RightPanel) {
+                    this.toggle(Panel::RightPanel, cx);
+                }
+            }
+        }));
+        subscriptions.push(
+            cx.subscribe(&search, |this, search, event: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let query = search.read(cx).value().trim().to_string();
+                    if !query.is_empty() {
+                        this.search_for(query, cx);
+                    }
+                }
+            }),
+        );
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
             SidebarEvent::SignOut => this.sign_out(cx),
         }));
         subscriptions.push(cx.subscribe(&sign_in, |this, _, event, cx| match event {
             SignInEvent::SignedIn(token) => {
-                let github: Arc<dyn GitHub> = Arc::new(Rest::new(token.clone()));
+                let cache = HttpCache::new(this.paths.http_cache());
+                let github: Arc<dyn GitHub> = Arc::new(Rest::new(token.clone()).with_cache(cache));
                 this.signed_in = true;
                 this.token_source = Some(Source::Keychain);
                 this.store
                     .update(cx, |store, cx| store.set_source(github, cx));
-                this.sidebar.update(cx, |sidebar, cx| {
-                    sidebar.select(Focus::Section(e1_ui::Section::Inbox), cx)
-                });
+                this.open_inbox(cx);
                 cx.notify();
             }
         }));
@@ -132,7 +172,7 @@ impl Shell {
         focus_handle.focus(window, cx);
 
         let layout = Layout::from_settings(&settings);
-        let this = Self {
+        let mut this = Self {
             paths,
             settings,
             layout,
@@ -140,7 +180,10 @@ impl Shell {
             sidebar,
             list,
             detail,
+            browser,
             sign_in,
+            search,
+            current: None,
             signed_in,
             token_source,
             focus_handle,
@@ -150,10 +193,10 @@ impl Shell {
         if signed_in {
             this.store.update(cx, |store, cx| store.refresh_all(cx));
             // The window opens on the inbox, which is the question a person
-            // opens GitHub to answer.
-            this.sidebar.update(cx, |sidebar, cx| {
-                sidebar.select(Focus::Section(e1_ui::Section::Inbox), cx)
-            });
+            // opens GitHub to answer. Pointed directly rather than through
+            // the sidebar's event, which would land after whatever the
+            // caller does next and undo it.
+            this.open_inbox(cx);
         }
         this
     }
@@ -167,10 +210,27 @@ impl Shell {
     pub fn open_at_launch(&mut self, key: ItemKey, file: Option<String>, cx: &mut Context<Self>) {
         self.detail.update(cx, |detail, cx| {
             detail.show(key, None, cx);
-            detail.show_files(file, cx);
+            if file.is_some() {
+                detail.show_files(file, cx);
+            }
         });
         if !self.layout.is_open(Panel::RightPanel) {
             self.toggle(Panel::RightPanel, cx);
+        }
+    }
+
+    /// Open a repository's finder with a file read, as soon as the window is
+    /// up. For screenshots (`E1_DEMO_FILES=owner/name:src/main.rs`).
+    pub fn browse_at_launch(
+        &mut self,
+        repo: e1_github::RepoId,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.refocus(Focus::files(repo.clone()), cx);
+        if let Some(path) = path {
+            self.detail
+                .update(cx, |detail, cx| detail.show_file((repo, path), cx));
         }
     }
 
@@ -202,8 +262,51 @@ impl Shell {
             self.settings.last_repo = Some(repo.to_string());
             self.persist();
         }
-        self.list.update(cx, |list, cx| list.set_focus(focus, cx));
+        self.current = Some(focus.clone());
+        match &focus {
+            Focus::Files { repo } => {
+                let repo = repo.clone();
+                self.browser
+                    .update(cx, |browser, cx| browser.set_repo(repo, cx));
+            }
+            _ => self.list.update(cx, |list, cx| list.set_focus(focus, cx)),
+        }
         cx.notify();
+    }
+
+    /// Point the window at the inbox, highlight and all.
+    fn open_inbox(&mut self, cx: &mut Context<Self>) {
+        let inbox = Focus::Section(e1_ui::Section::Inbox);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.adopt(inbox.clone(), cx));
+        self.focus_on(inbox, cx);
+    }
+
+    /// Search GitHub for what was typed.
+    fn search_for(&mut self, query: String, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| sidebar.clear(cx));
+        self.focus_on(Focus::search(query), cx);
+    }
+
+    /// What the centre column is showing, whichever view is showing it.
+    fn focus(&self, cx: &App) -> Option<Focus> {
+        let list = self.list.read(cx).focus().cloned();
+        // The finder's repository is the focus while the finder is what is
+        // on screen, which is when the list's focus is older than it.
+        match self.centre_is_browser(cx) {
+            true => self.browser_focus(cx),
+            false => list,
+        }
+    }
+
+    fn browser_focus(&self, cx: &App) -> Option<Focus> {
+        self.browser.read(cx).repo().cloned().map(Focus::files)
+    }
+
+    /// Whether the finder is the centre column right now.
+    fn centre_is_browser(&self, cx: &App) -> bool {
+        matches!(self.current.as_ref(), Some(Focus::Files { .. }))
+            && self.browser.read(cx).repo().is_some()
     }
 
     /// Change the list without going through the sidebar: the kind and
@@ -211,8 +314,7 @@ impl Shell {
     fn refocus(&mut self, focus: Focus, cx: &mut Context<Self>) {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.adopt(focus.clone(), cx));
-        self.list.update(cx, |list, cx| list.set_focus(focus, cx));
-        cx.notify();
+        self.focus_on(focus, cx);
     }
 
     fn toggle(&mut self, panel: Panel, cx: &mut Context<Self>) {
@@ -262,6 +364,7 @@ impl Shell {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.store.update(cx, |store, cx| store.refresh_all(cx));
         self.list.update(cx, |list, cx| list.refresh(cx));
+        self.browser.update(cx, |browser, cx| browser.refresh(cx));
         self.detail.update(cx, |detail, cx| detail.refresh(cx));
     }
 
@@ -410,8 +513,8 @@ impl Shell {
         let secondary = tokens.colors().text_secondary;
         let primary = tokens.colors().text_primary;
         let leading = !self.layout.is_open(Panel::Sidebar);
-        let focus = self.list.read(cx).focus().cloned();
-        let loading = self.list.read(cx).is_loading(cx);
+        let focus = self.focus(cx);
+        let loading = self.list.read(cx).is_loading(cx) || self.browser.read(cx).is_loading(cx);
         let title: Option<SharedString> = if self.signed_in {
             focus.as_ref().map(|focus| focus.title().into())
         } else {
@@ -419,6 +522,7 @@ impl Shell {
         };
         let subtitle: Option<SharedString> = focus
             .as_ref()
+            .filter(|_| self.signed_in)
             .and_then(|focus| focus.subtitle())
             .map(Into::into);
 
@@ -431,28 +535,20 @@ impl Shell {
             )
         });
         let focus = focus.filter(|_| self.signed_in);
-        let kind_chips = focus
+        let tab_chips = focus
             .as_ref()
-            .and_then(|focus| match focus {
-                Focus::Repo { kind, .. } => Some(*kind),
-                Focus::Section(_) => None,
-            })
-            .map(|kind| {
+            .and_then(|focus| focus.repo_tab())
+            .map(|tab| {
                 self.chips(
-                    "kind",
-                    vec![
-                        (ListKind::Pulls, rust_i18n::t!("list.pulls").to_string()),
-                        (ListKind::Issues, rust_i18n::t!("list.issues").to_string()),
-                    ],
-                    kind,
+                    "tab",
+                    RepoTab::ALL
+                        .iter()
+                        .map(|tab| (*tab, rust_i18n::t!(tab.label_key()).to_string()))
+                        .collect(),
+                    tab,
                     cx,
-                    |this, kind, cx| {
-                        if let Some(focus) = this
-                            .list
-                            .read(cx)
-                            .focus()
-                            .and_then(|focus| focus.with_kind(kind))
-                        {
+                    |this, tab, cx| {
+                        if let Some(focus) = this.focus(cx).and_then(|focus| focus.with_tab(tab)) {
                             this.refocus(focus, cx);
                         }
                     },
@@ -462,7 +558,7 @@ impl Shell {
             .as_ref()
             .and_then(|focus| match focus {
                 Focus::Repo { status, .. } => Some(*status),
-                Focus::Section(_) => None,
+                _ => None,
             })
             .map(|status| {
                 self.chips(
@@ -477,17 +573,20 @@ impl Shell {
                     status,
                     cx,
                     |this, status, cx| {
-                        if let Some(focus) = this
-                            .list
-                            .read(cx)
-                            .focus()
-                            .and_then(|focus| focus.with_status(status))
+                        if let Some(focus) =
+                            this.focus(cx).and_then(|focus| focus.with_status(status))
                         {
                             this.refocus(focus, cx);
                         }
                     },
                 )
             });
+        let search = self.signed_in.then(|| {
+            div()
+                .w(px(240.))
+                .flex_shrink_0()
+                .child(Input::new(&self.search).cleanable(true))
+        });
         let refresh = self.icon_button(
             "refresh",
             Icon::new(IconName::RotateCw)
@@ -541,8 +640,9 @@ impl Shell {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .children(kind_chips)
+                    .children(tab_chips)
                     .children(status_chips)
+                    .children(search)
                     .child(refresh)
                     .child(right_toggle),
             );
@@ -602,10 +702,12 @@ impl Render for Shell {
         });
         let column_header = self.column_header(cx).into_any_element();
         let right_header = right_open.then(|| self.right_header(cx).into_any_element());
-        let centre: AnyElement = if self.signed_in {
-            self.list.clone().into_any_element()
-        } else {
+        let centre: AnyElement = if !self.signed_in {
             self.sign_in.clone().into_any_element()
+        } else if self.centre_is_browser(cx) {
+            self.browser.clone().into_any_element()
+        } else {
+            self.list.clone().into_any_element()
         };
 
         v_flex()

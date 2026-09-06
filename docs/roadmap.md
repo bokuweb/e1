@@ -32,7 +32,7 @@ A user can: open the window → see the unread inbox, the pull requests they aut
 - Being a general-purpose git client. Local repositories are Ginka's business.
 - Writing to GitHub before reading it is right. Marking read, commenting and reviewing land in M2 and M3, after the read path is trusted.
 - GitHub Enterprise Server, multiple accounts. One token, `api.github.com`.
-- Its own offline database. Stale-while-revalidate in memory is enough until it is not (§7).
+- Its own offline database. Two caches — answers with their `ETag`s, and a snapshot of the store's memory — are what makes a launch instant and a refresh cheap (§4.8); a queryable database waits until something needs a query.
 
 ## 4. Architecture
 
@@ -102,6 +102,8 @@ Everything a view draws is one of these, in `e1_github::model`:
 | `Pull` | an `Item` plus what only a pull has: base and head, additions, deletions, changed files, mergeability | `GET /repos/{r}/pulls/{n}` |
 | `Comment` | one timeline entry: author, time, markdown body | `GET /repos/{r}/issues/{n}/comments` |
 | `PullFile` | one file of a pull's diff: path, status, counts, the unified patch when GitHub sends one | `GET /repos/{r}/pulls/{n}/files` |
+| `Tree` | every path in a repository at its default branch, and whether GitHub cut the list short | `GET /repos/{r}/git/trees/HEAD?recursive=1` |
+| `FileContent` | one file: size, the text when it is text and under GitHub's inline limit, the web URL otherwise | `GET /repos/{r}/contents/{path}` |
 
 One `Item` type for both pulls and issues, rather than two, because every list and every detail header draws them the same way and only the state glyph differs; `Kind` is where that difference lives. A merged pull is `closed` on the wire with `merged_at` set — the wire never says "merged" — so `Item::state()` is where that rule is written and tested.
 
@@ -118,6 +120,8 @@ pub trait GitHub: Send + Sync {
     fn pull(&self, repo: &RepoId, number: u64) -> Result<Pull>;
     fn comments(&self, repo: &RepoId, number: u64) -> Result<Vec<Comment>>;
     fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>>; // defaults to Unsupported
+    fn tree(&self, repo: &RepoId) -> Result<Tree>;                               // defaults to Unsupported
+    fn file(&self, repo: &RepoId, path: &str) -> Result<FileContent>;            // defaults to Unsupported
 }
 ```
 
@@ -131,7 +135,16 @@ Three ways in, in order of authority: the environment (`E1_GITHUB_TOKEN`, `GITHU
 
 The device flow needs an OAuth app with the flow enabled. e1 ships as one — `bokuweb`'s `e1` app, whose client id is in the source (`auth::DEFAULT_CLIENT_ID`), because a client id is public by design and the device flow has no secret. A fork that registers its own sets `E1_GITHUB_CLIENT_ID` at build time or at run time.
 
-### 4.7 UI stack
+### 4.7 Caches
+
+Two, at two levels, and neither is a database.
+
+- **Answers with their tags** (`e1_github::HttpCache`, `~/.e1/cache/http/`). Every `2xx` the REST client sees is kept under its URL with the `ETag` GitHub sent and the `next` page if there was one; the next request for the same URL carries `If-None-Match`, and a `304` is answered from disk. GitHub does not charge a `304` against the rate limit, so a refresh of the whole window costs round trips and nothing else. The cache knows nothing about what a body means, so it is right for every endpoint at once.
+- **The store's memory** (`e1_ui::snapshot`, `~/.e1/cache/store.json`). After every answer lands, the store writes what it knows — viewer, repositories, inbox, every list, the last forty items read — and the next launch reads it before the first request goes out. The window opens on yesterday's inbox and replaces it a moment later, rather than opening on *Loading…*.
+
+Both are cleared on sign-out, because a `304` for the last account's inbox is the last account's inbox. Both are safe to delete at any time.
+
+### 4.8 UI stack
 
 `gpui-component` at rev `5a564d4` over `gpui` at zed rev `ef07591`, exactly Ginka's lock. The reasoning is Ginka's (`docs/roadmap.md` §4.6 there) and is not repeated; the additional constraint here is E4. Used from it: `h_resizable`/`resizable_panel`, `Root`, `Icon`, `TextView::markdown`, `Tooltip`, `Input`. Built here: the frameless header strips, the state glyphs, the list rows, the detail header.
 
@@ -141,7 +154,7 @@ The device flow needs an OAuth app with the flow enabled. e1 ships as one — `b
 | --- | --- | --- |
 | **M0 Shell** | Workspace mirroring Ginka's; tokens, assets, settings, layout persistence; frameless glass window with three resizable columns and draggable header strips; `⌘B`/`⌘⌥B`; en+ja; token discovery; `Scripted` and `E1_DEMO=1` | landed |
 | **M1 Read** | Inbox; the four fixed sections (inbox, my pulls, review requests, assigned); repositories; per-repo pulls and issues, open/closed; detail with markdown body, labels, pull header, comments; open on GitHub; `⌘R` refresh; stale-while-revalidate `Fetch` | landed |
-| **M2 Review** | Pull files and diffs (landed: a Files tab, one diff open at a time, `e1_ui::diff`); sign in from the window by device flow, token in the keychain, sign out (landed); checks summary, review decision, review comments; mark a notification read; polling the inbox | in progress |
+| **M2 Review** | Pull files and diffs (landed: a Files tab, every diff in one virtualized list, folded per file, `e1_ui::diff`); sign in from the window by device flow, token in the keychain, sign out (landed); the file finder and file reading (landed); search over issues and pulls (landed); the two caches (landed, §4.7); checks summary, review decision, review comments; mark a notification read; polling the inbox | in progress |
 | **M3 Act** | Comment, approve / request changes, merge; assign, label; `⌘K` palette over every action and repository | |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
@@ -173,6 +186,9 @@ The device flow needs an OAuth app with the flow enabled. e1 ships as one — `b
 | 2026-09-05 | One `Item` type for pulls and issues | Every list and detail header draws both the same way; the state glyph is the only difference and `Kind` carries it. |
 | 2026-09-05 | Token discovered, never stored | Rule 8. `gh` already keeps it in the keyring; a second copy on disk is a second thing to leak. |
 | 2026-09-05 | Sign in by device flow; the token goes to the keychain through `security`, not to a file | Superseding the line above for the token the window obtains: a client that cannot sign itself in is one that only works for people who already have `gh`. The keychain is where `gh` keeps its own, and `security -i` keeps the secret off the command line. Shelling out rather than linking Security.framework keeps the crate free of a platform dependency it would use in one place. |
-| 2026-09-05 | A pull's diff is one file at a time, not all at once | Nine diffs stacked in a 420 px column is a wall, not a review; and the panel is not virtualized yet, so one open file is also what keeps a large pull from costing thousands of elements (rule 7 owes this a `uniform_list` in M5). |
+| 2026-09-05 | A pull's diff is one file at a time, not all at once | Superseded the next day: see below. |
+| 2026-09-06 | A pull's diffs are one virtualized list across every file, each foldable | With the rows in a `uniform_list` a hundred files cost what the screen shows, so the reason to open one at a time went away, and a review reads top to bottom. The file headers are rows of the same height as the lines, which is what lets it be one list. |
+| 2026-09-06 | Answers cached by `ETag`, and the store snapshotted, rather than a local database | Both are dumb and both are enough: a `304` is free and a snapshot makes the first frame full. A database earns its schema when something needs a query across what was fetched, and nothing does yet. |
+| 2026-09-06 | The file finder fetches the whole tree in one request and matches locally | One request for twenty thousand paths and then no latency at all beats a request per keystroke. GitHub truncates very large trees and the finder says so. |
 | 2026-09-06 | The OAuth client id is committed | It is public by design: it names the app and authenticates nothing, and the device flow never sees a secret. Keeping it out of the source would only mean every user registering their own app before the sign-in button worked. |
 | 2026-09-05 | `pull_files` has a default `Unsupported` body on the trait | The first method added after the trait shipped, and the pattern for every later one: a host implementation that lags the trait still compiles and the view draws the refusal. |

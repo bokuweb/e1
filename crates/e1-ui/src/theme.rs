@@ -297,6 +297,23 @@ pub fn apply(mode: Mode, cx: &mut App) {
     theme.colors.tab_foreground = tokens.text_secondary;
     theme.colors.tab_active_foreground = tokens.text_primary;
 
+    // Markdown. A link is the accent, the way a link is in every reader,
+    // and never an underline in the muted grey that reads as struck out. A
+    // table's head is a darker band over the glass, not a white one: white
+    // on this surface is the one colour that is not in the palette.
+    theme.colors.link = tokens.accent;
+    theme.colors.link_hover = tokens.accent.opacity(0.85);
+    theme.colors.link_active = tokens.accent.opacity(0.7);
+    theme.colors.table = tokens.transparent_surface();
+    theme.colors.table_head = tokens.table_head();
+    theme.colors.table_head_foreground = tokens.text_secondary;
+    theme.colors.table_foot = tokens.table_head();
+    theme.colors.table_foot_foreground = tokens.text_secondary;
+    theme.colors.table_even = tokens.transparent_surface();
+    theme.colors.table_row_border = tokens.border_subtle;
+    theme.colors.table_hover = tokens.row_hover();
+    theme.colors.table_active = tokens.row_active();
+
     theme.colors.primary = tokens.accent;
     theme.colors.primary_foreground = tokens.bg_window;
     theme.colors.primary_hover = tokens.accent.opacity(0.85);
@@ -333,6 +350,12 @@ impl Colors {
     /// The row you are on.
     pub fn row_active(&self) -> Hsla {
         self.accent.opacity(0.22)
+    }
+
+    /// A table's head: black at a third over the glass, so it reads as a
+    /// band and still lets the blur through.
+    pub fn table_head(&self) -> Hsla {
+        gpui::black().opacity(0.35)
     }
 
     /// A raised control the pointer is over.
@@ -387,6 +410,13 @@ mod tests {
             Mode::resolve(Appearance::Light, WindowAppearance::Dark),
             Mode::Light
         );
+    }
+
+    #[test]
+    fn a_table_head_is_a_dark_band_and_not_a_white_one() {
+        let head = Tokens::load(Mode::Dark).colors.table_head();
+        assert!(head.l < 0.1, "dark");
+        assert!(head.a < 0.5, "and translucent");
     }
 
     #[test]
