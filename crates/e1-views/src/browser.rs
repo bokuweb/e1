@@ -239,9 +239,7 @@ impl Render for FileBrowser {
         let body: AnyElement = if self.paths.is_empty() {
             match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("files.loading").to_string(), false, cx)
-                }
+                None if loading => crate::skeleton::path_rows(10, cx),
                 None => self.notice(rust_i18n::t!("files.empty").to_string(), false, cx),
             }
         } else if self.matches.is_empty() {

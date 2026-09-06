@@ -343,9 +343,7 @@ impl Render for ItemList {
         } else if self.rows.is_empty() {
             match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("list.loading").to_string(), false, cx)
-                }
+                None if loading => crate::skeleton::list_rows(8, cx),
                 None => self.notice(rust_i18n::t!("list.empty").to_string(), false, cx),
             }
         } else {

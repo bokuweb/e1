@@ -310,9 +310,11 @@ impl Sidebar {
             .id(("repo", index))
             .w_full()
             // Indented under the owner heading: the indent is what says
-            // these belong to it.
-            .ml_4()
-            .px_2p5()
+            // these belong to it. Padding rather than a margin, so the row
+            // still ends where the column does and the lock is not pushed
+            // against the edge.
+            .pl_6()
+            .pr_2p5()
             .py_1p5()
             .gap_2()
             .items_center()

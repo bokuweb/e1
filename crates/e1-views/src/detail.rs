@@ -637,9 +637,7 @@ impl Detail {
             }
             None => match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("detail.files.loading").to_string(), false, cx)
-                }
+                None if loading => crate::skeleton::diff(cx),
                 None => self.notice(rust_i18n::t!("detail.files.empty").to_string(), false, cx),
             },
         }
@@ -661,9 +659,7 @@ impl Detail {
         let Some(detail) = detail else {
             return match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("detail.loading").to_string(), false, cx)
-                }
+                None if loading => crate::skeleton::detail(cx),
                 None => self.notice(rust_i18n::t!("detail.empty").to_string(), false, cx),
             };
         };
@@ -1063,10 +1059,8 @@ impl Detail {
             Some(_) => self.notice(rust_i18n::t!("file.too_large").to_string(), false, cx),
             None => match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("file.loading").to_string(), false, cx)
-                }
-                None => self.notice(rust_i18n::t!("file.loading").to_string(), false, cx),
+                None if loading => crate::skeleton::diff(cx),
+                None => crate::skeleton::diff(cx),
             },
         };
         v_flex()

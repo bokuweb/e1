@@ -303,6 +303,8 @@ pub fn apply(mode: Mode, cx: &mut App) {
     theme.colors.title_bar_border = tokens.border_subtle;
     theme.colors.window_border = tokens.border_subtle;
 
+    // A placeholder bar: the row tint, so it reads as the ghost of a row.
+    theme.colors.skeleton = tokens.row_hover();
     theme.colors.popover = tokens.bg_raised;
     theme.colors.popover_foreground = tokens.text_primary;
     theme.colors.list = tokens.transparent_surface();

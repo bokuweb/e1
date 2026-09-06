@@ -43,7 +43,7 @@ Identical to Ginka's `docs/ui.md` §2, from the same `assets/themes/*.json`. The
 | Closed issue | `accent` | circle with a check |
 | Unread notification | `accent` | 6 px dot before the title |
 
-Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, controls (buttons, fields) at 6 — a step under a row, because a control sits inside a card and matching the card's corner reads as a card in a card — sidebar 250 (200–400), right panel 420 (280–720). The two sized columns are `flex_none`: only the centre grows into what the window has, which is what keeps one divider from moving the other.
+Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, controls (buttons, fields) at 6 — a step under a row, because a control sits inside a card and matching the card's corner reads as a card in a card — sidebar 250 (200–400), right panel 420 (280–720). The two sized columns have explicit widths and the centre takes the rest (never under 320 px); a divider is a 9 px grab area centred on the column's edge, with a hairline in the accent while the pointer is over it or holding it. Opening or closing a column slides it over the standard 260 ms with an ease-out cubic.
 
 The palette is Ginka's with the saturation eased twice over (backgrounds ×0.72, accent and status ×0.83, text ×0.81): the same hues, a good deal less of them, so a full day in the window does not tire. The sidebar is **frosted**: not a second coat of dark over the window (`bg.sidebar` was `#120D19` at 70 %) but a milky tint — white at 6 % on the dark theme — over a window that now lets the desktop through at 72 %, so the left column reads as etched glass beside the clearer centre.
 
@@ -75,7 +75,7 @@ A `uniform_list` of two-line rows at 56 px:
 1. State glyph, title (truncated), right-aligned `#number`.
 2. Author, age, comment count, and up to three labels as small chips coloured from the label's own colour at 22 % over the glass.
 
-An inbox row is the same shape with the reason (`review requested`, `mention`, `subscribed`) where the author would be, and the unread dot. Empty and error states are one muted line each; loading over a stale list keeps the list and dims nothing — the refresh glyph spins instead.
+An inbox row is the same shape with the reason (`review requested`, `mention`, `subscribed`) where the author would be, and the unread dot. Empty and error states are one muted line each. A *first* load is a skeleton — pulsing bars in the shape of the rows that are coming, in the row tint — and a refresh over a stale list keeps the list and dims nothing; the refresh glyph spins instead. The same holds for the finder, the detail and a diff: each has a skeleton in its own shape.
 
 ### 3.4 Right panel — the item
 
@@ -99,7 +99,7 @@ What the centre column is when there is no token: the logo at 56 px, *Sign in to
 | Region | Component |
 | --- | --- |
 | Window shell | `gpui-component` `Root`, our header strips |
-| Columns | `h_resizable` + `resizable_panel` |
+| Columns | ours: three flex children with explicit widths, a 9 px grab area centred on each divider, and the drag tracked at the window root |
 | List | `gpui::uniform_list` with rows from `e1_ui::rows::ItemRow` |
 | Markdown | `gpui-component` `TextView::markdown` |
 | Tooltips, icons | `gpui-component` primitives; our SVGs in `assets/icons/` for what the toolkit lacks (pull request, merge, issue, comment, lock) |
