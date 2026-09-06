@@ -35,7 +35,7 @@ pub fn avatar(path: Option<PathBuf>, login: &str, size: Pixels, cx: &App) -> Any
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
+                .text_size(px(11.5))
                 .text_color(tokens.colors().text_primary)
                 .child(initial)
                 .into_any_element()

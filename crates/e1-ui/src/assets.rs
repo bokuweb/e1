@@ -43,6 +43,10 @@ const ICONS: &[(&str, &str)] = &[
         include_str!("../../../assets/icons/user-check.svg"),
     ),
     (icon::E1, include_str!("../../../assets/icons/e1.svg")),
+    (
+        icon::SUN_MOON,
+        include_str!("../../../assets/icons/sun-moon.svg"),
+    ),
 ];
 
 /// Our icons, addressed the way [`gpui_component::Icon::path`] expects.
@@ -65,6 +69,12 @@ pub mod icon {
     pub const USER_CHECK: &str = "icons/user-check.svg";
     /// The app's own mark: an `E` and a `1`, painted in [`crate::Tokens::logo`].
     pub const E1: &str = "icons/e1.svg";
+    /// Follow the system's appearance: half sun, half moon.
+    pub const SUN_MOON: &str = "icons/sun-moon.svg";
+    /// The toolkit's: the light theme.
+    pub const SUN: &str = "icons/sun.svg";
+    /// The toolkit's: the dark theme.
+    pub const MOON: &str = "icons/moon.svg";
     /// The toolkit's: a closed issue.
     pub const CIRCLE_CHECK: &str = "icons/circle-check.svg";
     /// The toolkit's: the inbox.
@@ -110,6 +120,7 @@ mod tests {
             icon::LOCK,
             icon::USER_CHECK,
             icon::E1,
+            icon::SUN_MOON,
         ] {
             let loaded = Assets
                 .load(path)
@@ -121,7 +132,14 @@ mod tests {
 
     #[test]
     fn the_toolkit_icons_we_lean_on_are_really_there() {
-        for path in [icon::CIRCLE_CHECK, icon::INBOX, icon::EYE, icon::BELL] {
+        for path in [
+            icon::CIRCLE_CHECK,
+            icon::INBOX,
+            icon::EYE,
+            icon::BELL,
+            icon::SUN,
+            icon::MOON,
+        ] {
             assert!(Assets.load(path).unwrap().is_some(), "{path}");
         }
     }

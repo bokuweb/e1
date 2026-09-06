@@ -231,7 +231,7 @@ impl ItemList {
                                     .child(
                                         div()
                                             .flex_1()
-                                            .text_sm()
+                                            .text_size(px(13.))
                                             .when(row.unread || selected, |this| this.font_medium())
                                             .text_color(if row.unread || selected {
                                                 tokens.colors().text_primary
@@ -243,7 +243,7 @@ impl ItemList {
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(11.5))
                                             .text_color(tokens.colors().text_muted)
                                             .child(row.number.clone()),
                                     ),
@@ -257,7 +257,7 @@ impl ItemList {
                                     .when(spans_repos, |this| {
                                         this.child(
                                             div()
-                                                .text_xs()
+                                                .text_size(px(11.5))
                                                 .text_color(tokens.colors().text_secondary)
                                                 .truncate()
                                                 .child(row.repo.clone()),
@@ -266,7 +266,7 @@ impl ItemList {
                                     .children(author)
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(11.5))
                                             .text_color(tokens.colors().text_muted)
                                             .truncate()
                                             .child(row.meta.clone()),
@@ -275,7 +275,7 @@ impl ItemList {
                                         h_flex()
                                             .gap_1()
                                             .items_center()
-                                            .text_xs()
+                                            .text_size(px(11.5))
                                             .text_color(tokens.colors().text_muted)
                                             .child(
                                                 Icon::empty()
@@ -290,7 +290,7 @@ impl ItemList {
                                             .px_1p5()
                                             .rounded(px(tokens.radius.row))
                                             .bg(label.fill())
-                                            .text_xs()
+                                            .text_size(px(11.5))
                                             .text_color(label.color)
                                             .child(label.name.clone())
                                     })),
@@ -310,7 +310,7 @@ impl ItemList {
             .px_8()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(13.))
                     .text_color(if error {
                         tokens.colors().status_error
                     } else {
@@ -343,9 +343,7 @@ impl Render for ItemList {
         } else if self.rows.is_empty() {
             match error {
                 Some(error) => self.notice(error, true, cx),
-                None if loading => {
-                    self.notice(rust_i18n::t!("list.loading").to_string(), false, cx)
-                }
+                None if loading => crate::skeleton::list_rows(8, cx),
                 None => self.notice(rust_i18n::t!("list.empty").to_string(), false, cx),
             }
         } else {

@@ -26,6 +26,8 @@ pub struct AppSettings {
     pub locale: Option<String>,
     /// The repository that was on screen, as `owner/name`, restored on launch.
     pub last_repo: Option<String>,
+    /// The owners whose repositories are folded away in the sidebar.
+    pub collapsed_owners: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -41,6 +43,7 @@ impl Default for AppSettings {
             right_panel_width: 420.0,
             locale: None,
             last_repo: None,
+            collapsed_owners: Vec::new(),
         }
     }
 }
