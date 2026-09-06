@@ -13,7 +13,7 @@
 //! rather than opening empty and waiting.
 
 use e1_github::{
-    FileContent, GitHub, Item, Label, ListKind, MergeMethod, Notification, Project,
+    Checks, FileContent, GitHub, Item, Label, ListKind, MergeMethod, Notification, Project,
     ProjectMembership, PullFile, Repo, RepoId, ReviewEvent, Tree, User, Viewer,
 };
 use e1_ui::fetch::describe;
@@ -69,6 +69,8 @@ pub struct Store {
     projects: HashMap<String, Fetch<Vec<Project>>>,
     /// Which projects each item is in.
     memberships: HashMap<ItemKey, Fetch<Vec<ProjectMembership>>>,
+    /// The checks on each commit, by repository and sha.
+    checks: HashMap<(RepoId, String), Fetch<Checks>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -95,6 +97,39 @@ impl Store {
             candidates: HashMap::new(),
             projects: HashMap::new(),
             memberships: HashMap::new(),
+            checks: HashMap::new(),
+        }
+    }
+
+    /// The checks on a commit, if they have ever been asked for.
+    pub fn checks(&self, repo: &RepoId, sha: &str) -> Option<&Fetch<Checks>> {
+        self.checks.get(&(repo.clone(), sha.to_string()))
+    }
+
+    /// Fetch the checks on a commit.
+    pub fn load_checks(&mut self, repo: RepoId, sha: String, cx: &mut Context<Self>) {
+        if sha.is_empty() {
+            return;
+        }
+        let key = (repo.clone(), sha.clone());
+        self.checks.entry(key.clone()).or_default().begin();
+        self.fetch(
+            cx,
+            move |github| github.checks(&repo, &sha),
+            move |this, result, _| {
+                this.checks.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch the checks on a commit only if they never have been.
+    pub fn ensure_checks(&mut self, repo: RepoId, sha: String, cx: &mut Context<Self>) {
+        if self
+            .checks
+            .get(&(repo.clone(), sha.clone()))
+            .is_none_or(Fetch::is_idle)
+        {
+            self.load_checks(repo, sha, cx);
         }
     }
 

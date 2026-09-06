@@ -166,6 +166,11 @@ pub trait GitHub: Send + Sync {
         let _ = (repo, number, method);
         Err(Error::Unsupported("merge"))
     }
+    /// Every check and status on a commit.
+    fn checks(&self, repo: &RepoId, sha: &str) -> Result<Checks> {
+        let _ = (repo, sha);
+        Err(Error::Unsupported("read checks"))
+    }
     /// Review a pull: approve it, ask for changes, or only comment.
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
         let _ = (repo, number, event, body);

@@ -210,6 +210,7 @@ impl Scripted {
                 .map(|(name, color)| Label {
                     name: name.to_string(),
                     color: color.to_string(),
+                    description: None,
                 })
                 .collect(),
             assignees: Vec::new(),
@@ -246,6 +247,7 @@ impl Scripted {
             deletions: dels,
             changed_files: files,
             mergeable: Some(true),
+            head_sha: format!("sha-{head}"),
         };
         let comment = |id: u64, author: &str, hours: i64, body: &str| Comment {
             id,
@@ -515,6 +517,7 @@ impl GitHub for Scripted {
         match (item, extra) {
             (Some(item), Some(extra)) => Ok(Pull {
                 item,
+                head_sha: format!("sha-{}", extra.head),
                 head: extra.head,
                 base: extra.base,
                 additions: extra.additions,
@@ -530,6 +533,7 @@ impl GitHub for Scripted {
                 deletions: 0,
                 changed_files: 0,
                 mergeable: None,
+                head_sha: String::new(),
             }),
             _ => Err(Error::Status {
                 status: 404,
@@ -626,6 +630,35 @@ impl GitHub for Scripted {
         Ok(())
     }
 
+    fn checks(&self, _repo: &RepoId, sha: &str) -> Result<Checks> {
+        let _guard = self.guard()?;
+        // A head that says so fails; everything else passes, with one run
+        // still going on a draft so the pending state has a face.
+        let run = |name: &str, state: CheckState| CheckRun {
+            name: name.to_string(),
+            state,
+            html_url: Some("https://github.com/bokuweb/e1/actions".into()),
+        };
+        Ok(Checks {
+            runs: if sha.contains("fail") {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Failure),
+                ]
+            } else if sha.contains("persist") {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Pending),
+                ]
+            } else {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Success),
+                ]
+            },
+        })
+    }
+
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
         // A review is a comment with a verdict on the front; the fake keeps
         // the verdict as words, which is what the timeline would show.
@@ -636,16 +669,17 @@ impl GitHub for Scripted {
     fn labels(&self, _repo: &RepoId) -> Result<Vec<Label>> {
         let _guard = self.guard()?;
         Ok([
-            ("bug", "d73a4a"),
-            ("enhancement", "a2eeef"),
-            ("design", "c5def5"),
-            ("wip", "fbca04"),
-            ("macos", "0e8a16"),
+            ("bug", "d73a4a", "Something isn't working"),
+            ("enhancement", "a2eeef", "New feature or request"),
+            ("design", "c5def5", "How it looks and reads"),
+            ("wip", "fbca04", "Not ready for review"),
+            ("macos", "0e8a16", "Only on macOS"),
         ]
         .iter()
-        .map(|(name, color)| Label {
+        .map(|(name, color, description)| Label {
             name: name.to_string(),
             color: color.to_string(),
+            description: Some(description.to_string()),
         })
         .collect())
     }
@@ -665,9 +699,14 @@ impl GitHub for Scripted {
                     .find(|label| &label.name == name)
                     .map(|label| label.color.clone())
                     .unwrap_or_else(|| "888888".into());
+                let description = offered
+                    .iter()
+                    .find(|label| &label.name == name)
+                    .and_then(|label| label.description.clone());
                 item.labels.push(Label {
                     name: name.clone(),
                     color,
+                    description,
                 });
             }
         }

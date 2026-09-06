@@ -110,6 +110,9 @@ pub struct Label {
     pub name: String,
     /// Six hex digits without a `#`, as GitHub sends it.
     pub color: String,
+    /// What the label is for, when the repository said.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// What kind of thing a notification is about.
@@ -295,6 +298,71 @@ pub struct Pull {
     /// Whether GitHub thinks it can be merged. `None` while GitHub is still
     /// computing it, which is the usual answer right after a push.
     pub mergeable: Option<bool>,
+    /// The commit at the head, which is what checks are keyed by.
+    #[serde(default)]
+    pub head_sha: String,
+}
+
+/// What one check or status came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckState {
+    /// Passed.
+    Success,
+    /// Failed, errored, timed out, or wants action.
+    Failure,
+    /// Queued or running.
+    Pending,
+    /// Neither passed nor failed: skipped, or neutral.
+    Neutral,
+}
+
+/// One check run, or one commit status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckRun {
+    /// The check's name, or the status's context.
+    pub name: String,
+    /// What it came to.
+    pub state: CheckState,
+    /// Where its details are, when it said.
+    pub html_url: Option<String>,
+}
+
+/// Every check and status on a commit, together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Checks {
+    /// The runs, in GitHub's order.
+    pub runs: Vec<CheckRun>,
+}
+
+impl Checks {
+    /// How many are in each state: `(passed, failed, pending)`. Neutral runs
+    /// count as passed, the way GitHub's own summary counts them.
+    pub fn tally(&self) -> (usize, usize, usize) {
+        let mut tally = (0, 0, 0);
+        for run in &self.runs {
+            match run.state {
+                CheckState::Success | CheckState::Neutral => tally.0 += 1,
+                CheckState::Failure => tally.1 += 1,
+                CheckState::Pending => tally.2 += 1,
+            }
+        }
+        tally
+    }
+
+    /// The one state the whole set is in: a failure outranks a pending run,
+    /// which outranks success, and no runs at all is neutral.
+    pub fn overall(&self) -> CheckState {
+        let (_, failed, pending) = self.tally();
+        if self.runs.is_empty() {
+            CheckState::Neutral
+        } else if failed > 0 {
+            CheckState::Failure
+        } else if pending > 0 {
+            CheckState::Pending
+        } else {
+            CheckState::Success
+        }
+    }
 }
 
 /// What a review says.

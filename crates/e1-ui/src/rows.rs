@@ -276,6 +276,7 @@ mod tests {
                 .map(|n| Label {
                     name: format!("l{n}"),
                     color: "d73a4a".into(),
+                    description: None,
                 })
                 .collect(),
             assignees: Vec::new(),
