@@ -30,7 +30,7 @@ cargo test -p e1-github -p e1-ui            # the fast loop: no GPUI build
 
 On a volume without native extended attributes macOS drops `._*` sidecar files next to every file written; `rust-i18n` reads every file in `locales/`, so delete them (`find . -name '._*' -not -path './target/*' -delete`) before a build that fails on `locales/._app.yml`.
 
-The token is looked for in this order: `E1_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, the keychain entry the window wrote when the reader signed in, then whatever `gh auth token` prints. Without one the window opens on the sign-in screen, which runs GitHub's device flow; that needs an OAuth app with the device flow enabled, whose client id is `E1_GITHUB_CLIENT_ID` (at build time or at run time). `E1_HOME` overrides `~/.e1`; `E1_LOG` sets the tracing filter.
+The token is looked for in this order: `E1_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, the keychain entry the window wrote when the reader signed in, then whatever `gh auth token` prints. Without one the window opens on the sign-in screen, which runs GitHub's device flow as the `e1` OAuth app (`e1_github::auth::DEFAULT_CLIENT_ID`, public by design); a fork with its own app sets `E1_GITHUB_CLIENT_ID` at build time or at run time. `E1_HOME` overrides `~/.e1`; `E1_LOG` sets the tracing filter.
 
 ## Layout
 

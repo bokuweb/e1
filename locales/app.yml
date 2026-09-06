@@ -175,9 +175,6 @@ signin.button:
 signin.hint:
   en: "Or set GITHUB_TOKEN, or run `gh auth login`, and start e1 again."
   ja: "または GITHUB_TOKEN を設定するか `gh auth login` を実行して、e1 を再起動してください。"
-signin.no_client_id:
-  en: "Signing in from the window needs an OAuth app: set E1_GITHUB_CLIENT_ID to its client id, with the device flow enabled."
-  ja: "ウィンドウからのサインインには OAuth App が必要です。Device Flow を有効にした App の client id を E1_GITHUB_CLIENT_ID に設定してください。"
 signin.starting:
   en: Asking GitHub for a code…
   ja: GitHub にコードを要求中…
