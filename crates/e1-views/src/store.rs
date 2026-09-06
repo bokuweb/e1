@@ -13,7 +13,8 @@
 //! rather than opening empty and waiting.
 
 use e1_github::{
-    FileContent, GitHub, Item, ListKind, Notification, PullFile, Repo, RepoId, Tree, Viewer,
+    FileContent, GitHub, Item, Label, ListKind, MergeMethod, Notification, Project,
+    ProjectMembership, PullFile, Repo, RepoId, ReviewEvent, Tree, User, Viewer,
 };
 use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
@@ -60,6 +61,14 @@ pub struct Store {
     avatars: HashMap<String, Fetch<PathBuf>>,
     /// The last write on each item: in flight, done, or refused.
     actions: HashMap<ItemKey, Fetch<()>>,
+    /// Each repository's labels, for the picker.
+    repo_labels: HashMap<RepoId, Fetch<Vec<Label>>>,
+    /// Each repository's assignable people, for the picker.
+    candidates: HashMap<RepoId, Fetch<Vec<User>>>,
+    /// Each owner's projects, for the picker.
+    projects: HashMap<String, Fetch<Vec<Project>>>,
+    /// Which projects each item is in.
+    memberships: HashMap<ItemKey, Fetch<Vec<ProjectMembership>>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -82,6 +91,95 @@ impl Store {
             avatar_dir: None,
             avatars: HashMap::new(),
             actions: HashMap::new(),
+            repo_labels: HashMap::new(),
+            candidates: HashMap::new(),
+            projects: HashMap::new(),
+            memberships: HashMap::new(),
+        }
+    }
+
+    /// A repository's labels, if they have ever been asked for.
+    pub fn repo_labels(&self, repo: &RepoId) -> Option<&Fetch<Vec<Label>>> {
+        self.repo_labels.get(repo)
+    }
+
+    /// Fetch a repository's labels only if they never have been.
+    pub fn ensure_repo_labels(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        if self.repo_labels.get(&repo).is_none_or(Fetch::is_idle) {
+            self.repo_labels.entry(repo.clone()).or_default().begin();
+            let key = repo.clone();
+            self.fetch(
+                cx,
+                move |github| github.labels(&repo),
+                move |this, result, _| {
+                    this.repo_labels.entry(key).or_default().finish(result);
+                },
+            );
+        }
+    }
+
+    /// A repository's assignable people, if they have ever been asked for.
+    pub fn candidates(&self, repo: &RepoId) -> Option<&Fetch<Vec<User>>> {
+        self.candidates.get(repo)
+    }
+
+    /// Fetch a repository's assignable people only if they never have been.
+    pub fn ensure_candidates(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        if self.candidates.get(&repo).is_none_or(Fetch::is_idle) {
+            self.candidates.entry(repo.clone()).or_default().begin();
+            let key = repo.clone();
+            self.fetch(
+                cx,
+                move |github| github.assignees(&repo),
+                move |this, result, _| {
+                    this.candidates.entry(key).or_default().finish(result);
+                },
+            );
+        }
+    }
+
+    /// An owner's projects, if they have ever been asked for.
+    pub fn projects(&self, owner: &str) -> Option<&Fetch<Vec<Project>>> {
+        self.projects.get(owner)
+    }
+
+    /// Fetch an owner's projects only if they never have been.
+    pub fn ensure_projects(&mut self, owner: String, cx: &mut Context<Self>) {
+        if self.projects.get(&owner).is_none_or(Fetch::is_idle) {
+            self.projects.entry(owner.clone()).or_default().begin();
+            let key = owner.clone();
+            self.fetch(
+                cx,
+                move |github| github.projects(&owner),
+                move |this, result, _| {
+                    this.projects.entry(key).or_default().finish(result);
+                },
+            );
+        }
+    }
+
+    /// The projects an item is in, if they have ever been asked for.
+    pub fn memberships(&self, key: &ItemKey) -> Option<&Fetch<Vec<ProjectMembership>>> {
+        self.memberships.get(key)
+    }
+
+    /// Fetch the projects an item is in.
+    pub fn load_memberships(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        self.memberships.entry(key.clone()).or_default().begin();
+        let (repo, number) = key.clone();
+        self.fetch(
+            cx,
+            move |github| github.item_projects(&repo, number),
+            move |this, result, _| {
+                this.memberships.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch the projects an item is in only if they never have been.
+    pub fn ensure_memberships(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        if self.memberships.get(&key).is_none_or(Fetch::is_idle) {
+            self.load_memberships(key, cx);
         }
     }
 
@@ -185,9 +283,123 @@ impl Store {
         );
     }
 
-    /// Merge a pull.
-    pub fn merge(&mut self, key: ItemKey, cx: &mut Context<Self>) {
-        self.act(key, |github, repo, number| github.merge(repo, number), cx);
+    /// Merge a pull, one of three ways.
+    pub fn merge(&mut self, key: ItemKey, method: MergeMethod, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.merge(repo, number, method),
+            cx,
+        );
+    }
+
+    /// Review a pull.
+    pub fn review(
+        &mut self,
+        key: ItemKey,
+        event: ReviewEvent,
+        body: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.act(
+            key,
+            move |github, repo, number| github.review(repo, number, event, &body),
+            cx,
+        );
+    }
+
+    /// Put a label on an item.
+    pub fn add_label(&mut self, key: ItemKey, name: String, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.add_labels(repo, number, &[name]).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Take a label off an item.
+    pub fn remove_label(&mut self, key: ItemKey, name: String, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.remove_label(repo, number, &name).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Assign someone.
+    pub fn add_assignee(&mut self, key: ItemKey, login: String, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.add_assignees(repo, number, &[login]).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Unassign someone.
+    pub fn remove_assignee(&mut self, key: ItemKey, login: String, cx: &mut Context<Self>) {
+        self.act(
+            key,
+            move |github, repo, number| github.remove_assignees(repo, number, &[login]).map(|_| ()),
+            cx,
+        );
+    }
+
+    /// Put an item into a project. The item's global id comes from the
+    /// detail already on screen.
+    pub fn add_to_project(&mut self, key: ItemKey, project_id: String, cx: &mut Context<Self>) {
+        let Some(node_id) = self
+            .details
+            .get(&key)
+            .and_then(Fetch::value)
+            .map(|detail| detail.item.node_id.clone())
+        else {
+            return;
+        };
+        let reload = key.clone();
+        self.act_then(
+            key,
+            move |github, _, _| github.add_to_project(&project_id, &node_id),
+            move |this, cx| this.load_memberships(reload, cx),
+            cx,
+        );
+    }
+
+    /// Take an item out of a project.
+    pub fn remove_from_project(
+        &mut self,
+        key: ItemKey,
+        project_id: String,
+        item_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let reload = key.clone();
+        self.act_then(
+            key,
+            move |github, _, _| github.remove_from_project(&project_id, &item_id),
+            move |this, cx| this.load_memberships(reload, cx),
+            cx,
+        );
+    }
+
+    /// Like [`Store::act`], with something more to do once it lands.
+    fn act_then<W, T>(&mut self, key: ItemKey, work: W, then: T, cx: &mut Context<Self>)
+    where
+        W: FnOnce(&dyn GitHub, &RepoId, u64) -> e1_github::Result<()> + Send + 'static,
+        T: FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    {
+        self.actions.entry(key.clone()).or_default().begin();
+        let (repo, number) = key.clone();
+        self.fetch(
+            cx,
+            move |github| work(github, &repo, number),
+            move |this, result, cx| {
+                let ok = result.is_ok();
+                this.actions.entry(key.clone()).or_default().finish(result);
+                if ok {
+                    this.load_detail(key, None, cx);
+                    then(this, cx);
+                }
+            },
+        );
     }
 
     /// Remember what lands at this path, and start from what is there.

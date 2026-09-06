@@ -216,8 +216,10 @@ pub mod device {
     pub const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
     /// What the app asks to be allowed to do: read and write repositories
     /// and their issues and pulls, read the inbox, read organisation
-    /// membership so private organisation repositories list.
-    pub const SCOPE: &str = "repo notifications read:org";
+    /// membership so private organisation repositories list, and read and
+    /// write projects. A token from `gh` may lack `project`; the projects
+    /// row says so when GitHub refuses.
+    pub const SCOPE: &str = "repo notifications read:org project";
     /// The grant type the poll names.
     const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 

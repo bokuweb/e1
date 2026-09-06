@@ -231,6 +231,9 @@ pub struct Item {
     pub repo: RepoId,
     /// The number, unique within the repository across pulls and issues.
     pub number: u64,
+    /// GitHub's global id, which is what GraphQL — and so Projects — takes.
+    #[serde(default)]
+    pub node_id: String,
     /// The title.
     pub title: String,
     /// Pull or issue.
@@ -294,6 +297,79 @@ pub struct Pull {
     pub mergeable: Option<bool>,
 }
 
+/// What a review says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewEvent {
+    /// Approve.
+    Approve,
+    /// Ask for changes.
+    RequestChanges,
+    /// Neither: a review that is only its comment.
+    Comment,
+}
+
+impl ReviewEvent {
+    /// The value GitHub's `event` field takes.
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+            Self::Comment => "COMMENT",
+        }
+    }
+}
+
+/// How a pull is merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MergeMethod {
+    /// A merge commit.
+    #[default]
+    Merge,
+    /// One squashed commit.
+    Squash,
+    /// Rebased onto the base.
+    Rebase,
+}
+
+impl MergeMethod {
+    /// All three, in the order the chips show them.
+    pub const ALL: &'static [MergeMethod] =
+        &[MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
+
+    /// The value GitHub's `merge_method` field takes.
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+}
+
+/// A GitHub Project (the current kind, "Projects v2").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    /// The project's global id, which adding an item takes.
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Its number within the owner.
+    pub number: u64,
+    /// Whether it is closed.
+    pub closed: bool,
+}
+
+/// An item's place in a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectMembership {
+    /// The project.
+    pub project_id: String,
+    /// The project's title.
+    pub title: String,
+    /// The item's id *within* the project, which removing it takes.
+    pub item_id: String,
+}
+
 /// One entry of an item's timeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
@@ -317,6 +393,7 @@ mod tests {
         Item {
             repo: RepoId::new("o", "r"),
             number: 1,
+            node_id: String::new(),
             title: String::new(),
             kind,
             status,

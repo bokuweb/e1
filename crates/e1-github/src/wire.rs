@@ -104,6 +104,8 @@ pub(crate) struct WirePullMarker {
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireIssue {
     pub number: u64,
+    #[serde(default)]
+    pub node_id: String,
     pub title: String,
     pub state: String,
     pub user: WireUser,
@@ -155,6 +157,7 @@ impl WireIssue {
         Some(Item {
             repo,
             number: self.number,
+            node_id: self.node_id,
             title: self.title,
             kind,
             status: parse_status(&self.state),
@@ -181,6 +184,8 @@ pub(crate) struct WireRef {
 #[derive(Debug, Deserialize)]
 pub(crate) struct WirePull {
     pub number: u64,
+    #[serde(default)]
+    pub node_id: String,
     pub title: String,
     pub state: String,
     #[serde(default)]
@@ -220,6 +225,7 @@ impl WirePull {
         Item {
             repo: repo.clone(),
             number: self.number,
+            node_id: self.node_id,
             title: self.title,
             kind: Kind::Pull {
                 draft: self.draft,

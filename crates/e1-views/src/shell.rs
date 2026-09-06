@@ -475,9 +475,12 @@ impl Shell {
             Panel::Sidebar => drag.start_width + delta,
             Panel::RightPanel => drag.start_width - delta,
         };
+        // The sidebar has a ceiling of its own; the right panel may take
+        // whatever the centre's floor leaves it, because reading a diff
+        // is what a wide right panel is for.
         let (min, max) = match drag.panel {
-            Panel::Sidebar => (px(200.), px(400.)),
-            Panel::RightPanel => (px(280.), px(720.)),
+            Panel::Sidebar => (px(200.), px(480.)),
+            Panel::RightPanel => (px(280.), Pixels::MAX),
         };
         // Neither column may squeeze the centre below its floor.
         let other = match drag.panel {
@@ -943,19 +946,38 @@ impl Render for Shell {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_right_panel))
             .on_action(cx.listener(Self::on_refresh))
-            // The divider drag is tracked here, at the root, so a pointer
-            // that leaves the divider's few pixels keeps resizing.
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                this.drag_to(event.position.x, window, cx);
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_resize(cx)),
-            )
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.end_resize(cx)),
             )
+            // While a divider is held the pointer is tracked at the window,
+            // not on an element: an element only hears moves while it is
+            // the one under the pointer, and a drag crosses text fields and
+            // scrollbars that claim the pointer for themselves.
+            .children(self.resizing.map(|_| {
+                let this = cx.entity();
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        let on_move = this.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase.bubble() {
+                                on_move.update(cx, |this, cx| {
+                                    this.drag_to(event.position.x, window, cx)
+                                });
+                            }
+                        });
+                        let on_up = this.clone();
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase.bubble() {
+                                on_up.update(cx, |this, cx| this.end_resize(cx));
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_0()
+            }))
             .size_full()
             // No background here: `Root` already paints the translucent
             // window and painting it again composites the alpha away.

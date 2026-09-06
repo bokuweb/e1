@@ -269,3 +269,40 @@ sidebar.appearance.light:
 sidebar.appearance.system:
   en: "Following the system. Click for dark."
   ja: "システムに従う。クリックでダークに"
+
+detail.labels:
+  en: Labels
+  ja: ラベル
+detail.assignees:
+  en: Assignees
+  ja: 担当者
+detail.projects:
+  en: Projects
+  ja: プロジェクト
+detail.none:
+  en: None
+  ja: なし
+detail.add:
+  en: Edit…
+  ja: 編集…
+detail.done:
+  en: Done
+  ja: 完了
+detail.review.approve:
+  en: Approve
+  ja: 承認
+detail.review.request_changes:
+  en: Request changes
+  ja: 修正依頼
+detail.merge.method.merge:
+  en: Merge commit
+  ja: マージコミット
+detail.merge.method.squash:
+  en: Squash
+  ja: スカッシュ
+detail.merge.method.rebase:
+  en: Rebase
+  ja: リベース
+detail.merge.cancel:
+  en: Cancel
+  ja: やめる

@@ -9,7 +9,7 @@
 use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
-use e1_github::{Comment, FileStatus};
+use e1_github::{Comment, FileStatus, MergeMethod, ReviewEvent};
 use e1_ui::Tokens;
 use e1_ui::diff;
 use e1_ui::rows::{Glyph, LabelChip};
@@ -86,6 +86,21 @@ pub struct Detail {
     clear_composer: bool,
     /// The merge button was pressed once; the next press merges.
     confirm_merge: bool,
+    /// How the next merge is done.
+    merge_method: MergeMethod,
+    /// The picker that is open under the head, if one is.
+    picker: Option<Picker>,
+}
+
+/// One of the three lists a reader can edit from the head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Picker {
+    /// The repository's labels.
+    Labels,
+    /// The repository's assignable people.
+    Assignees,
+    /// The owner's projects.
+    Projects,
 }
 
 impl Detail {
@@ -118,6 +133,82 @@ impl Detail {
             composer,
             clear_composer: false,
             confirm_merge: false,
+            merge_method: MergeMethod::default(),
+            picker: None,
+        }
+    }
+
+    /// Submit a review with what is in the composer as its body. An
+    /// approval needs no words; a request for changes reads better with
+    /// some, but GitHub accepts either.
+    fn send_review(&mut self, event: ReviewEvent, cx: &mut Context<Self>) {
+        let Some(Showing::Item(key)) = self.showing.clone() else {
+            return;
+        };
+        let body = self.composer.read(cx).value().trim().to_string();
+        self.clear_composer = true;
+        self.store
+            .update(cx, |store, cx| store.review(key, event, body, cx));
+        cx.notify();
+    }
+
+    /// Open one of the pickers, fetching what it lists, or close it.
+    fn toggle_picker(&mut self, picker: Picker, cx: &mut Context<Self>) {
+        if self.picker == Some(picker) {
+            self.picker = None;
+            cx.notify();
+            return;
+        }
+        self.picker = Some(picker);
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            let repo = key.0.clone();
+            self.store.update(cx, |store, cx| match picker {
+                Picker::Labels => store.ensure_repo_labels(repo, cx),
+                Picker::Assignees => store.ensure_candidates(repo, cx),
+                Picker::Projects => {
+                    store.ensure_projects(repo.owner.clone(), cx);
+                    store.ensure_memberships(key, cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    fn toggle_label(&mut self, name: String, has: bool, cx: &mut Context<Self>) {
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            self.store.update(cx, |store, cx| {
+                if has {
+                    store.remove_label(key, name, cx)
+                } else {
+                    store.add_label(key, name, cx)
+                }
+            });
+        }
+    }
+
+    fn toggle_assignee(&mut self, login: String, has: bool, cx: &mut Context<Self>) {
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            self.store.update(cx, |store, cx| {
+                if has {
+                    store.remove_assignee(key, login, cx)
+                } else {
+                    store.add_assignee(key, login, cx)
+                }
+            });
+        }
+    }
+
+    fn toggle_project(
+        &mut self,
+        project_id: String,
+        item_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Showing::Item(key)) = self.showing.clone() {
+            self.store.update(cx, |store, cx| match item_id {
+                Some(item_id) => store.remove_from_project(key, project_id, item_id, cx),
+                None => store.add_to_project(key, project_id, cx),
+            });
         }
     }
 
@@ -153,8 +244,10 @@ impl Detail {
             return;
         }
         self.confirm_merge = false;
+        let method = self.merge_method;
         if let Some(Showing::Item(key)) = self.showing.clone() {
-            self.store.update(cx, |store, cx| store.merge(key, cx));
+            self.store
+                .update(cx, |store, cx| store.merge(key, method, cx));
             cx.notify();
         }
     }
@@ -166,6 +259,7 @@ impl Detail {
             self.tab = Tab::Conversation;
             self.collapsed.clear();
             self.confirm_merge = false;
+            self.picker = None;
         }
         self.showing = Some(showing);
         self.store
@@ -679,136 +773,122 @@ impl Detail {
             .map(|pull| self.tabs(pull.changed_files, cx));
         let showing_files = self.tab == Tab::Files && detail.pull.is_some();
 
-        let head =
-            v_flex()
-                .w_full()
-                .px_5()
-                .pt_4()
-                .pb_3()
-                .gap_2()
-                .border_b_1()
-                .border_color(tokens.colors().border_subtle)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_baseline()
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(muted)
-                                .child(format!("#{}", item.number)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(14.))
-                                .font_medium()
-                                .text_color(tokens.colors().text_primary)
-                                .child(item.title.clone()),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .flex_wrap()
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(px(tokens.radius.row))
-                                .bg(glyph_color.opacity(0.18))
-                                .child(
-                                    Icon::empty()
-                                        .path(glyph.icon())
-                                        .size_3p5()
-                                        .text_color(glyph_color),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .font_medium()
-                                        .text_color(glyph_color)
-                                        .child(rust_i18n::t!(glyph.label_key()).to_string()),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(avatar(
-                                    self.store.read(cx).avatar(&item.author.avatar_url),
-                                    &item.author.login,
-                                    px(18.),
-                                    cx,
-                                ))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(tokens.colors().text_secondary)
-                                        .child(format!(
-                                            "{} · {}",
-                                            item.author.login,
-                                            age(Utc::now(), item.created_at)
-                                        )),
-                                ),
-                        )
-                        .children(detail.pull.as_ref().map(|pull| {
-                            h_flex()
-                                .gap_3()
-                                .items_center()
-                                .text_size(px(11.5))
-                                .child(
-                                    div()
-                                        .px_1p5()
-                                        .rounded(px(tokens.radius.row))
-                                        .bg(tokens.colors().code_bg)
-                                        .text_color(tokens.colors().text_secondary)
-                                        .child(
-                                            rust_i18n::t!(
-                                                "detail.wants_to_merge",
-                                                head = pull.head,
-                                                base = pull.base
-                                            )
-                                            .to_string(),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(tokens.colors().status_done)
-                                        .child(format!("+{}", pull.additions)),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(tokens.colors().status_error)
-                                        .child(format!("−{}", pull.deletions)),
-                                )
-                                .child(
-                                    div().text_color(muted).child(
-                                        rust_i18n::t!("detail.files", count = pull.changed_files)
-                                            .to_string(),
+        let head = v_flex()
+            .w_full()
+            .px_5()
+            .pt_4()
+            .pb_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(tokens.colors().border_subtle)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(muted)
+                            .child(format!("#{}", item.number)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(14.))
+                            .font_medium()
+                            .text_color(tokens.colors().text_primary)
+                            .child(item.title.clone()),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .flex_wrap()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(tokens.radius.row))
+                            .bg(glyph_color.opacity(0.18))
+                            .child(
+                                Icon::empty()
+                                    .path(glyph.icon())
+                                    .size_3p5()
+                                    .text_color(glyph_color),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .font_medium()
+                                    .text_color(glyph_color)
+                                    .child(rust_i18n::t!(glyph.label_key()).to_string()),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(avatar(
+                                self.store.read(cx).avatar(&item.author.avatar_url),
+                                &item.author.login,
+                                px(18.),
+                                cx,
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(tokens.colors().text_secondary)
+                                    .child(format!(
+                                        "{} · {}",
+                                        item.author.login,
+                                        age(Utc::now(), item.created_at)
+                                    )),
+                            ),
+                    )
+                    .children(detail.pull.as_ref().map(|pull| {
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .text_size(px(11.5))
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .rounded(px(tokens.radius.row))
+                                    .bg(tokens.colors().code_bg)
+                                    .text_color(tokens.colors().text_secondary)
+                                    .child(
+                                        rust_i18n::t!(
+                                            "detail.wants_to_merge",
+                                            head = pull.head,
+                                            base = pull.base
+                                        )
+                                        .to_string(),
                                     ),
-                                )
-                        })),
-                )
-                .when(!labels.is_empty(), |this| {
-                    this.child(h_flex().gap_1p5().flex_wrap().children(labels.iter().map(
-                        |label| {
-                            div()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(px(tokens.radius.row))
-                                .bg(label.fill())
-                                .text_size(px(11.5))
-                                .text_color(label.color)
-                                .child(label.name.clone())
-                        },
-                    )))
-                })
-                .child(self.actions(&key, &detail, cx))
-                .children(tabs);
+                            )
+                            .child(
+                                div()
+                                    .text_color(tokens.colors().status_done)
+                                    .child(format!("+{}", pull.additions)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(tokens.colors().status_error)
+                                    .child(format!("−{}", pull.deletions)),
+                            )
+                            .child(
+                                div().text_color(muted).child(
+                                    rust_i18n::t!("detail.files", count = pull.changed_files)
+                                        .to_string(),
+                                ),
+                            )
+                    })),
+            )
+            .child(self.actions(&key, &detail, cx))
+            .child(self.facets(&key, &detail, &labels, cx))
+            .children(tabs);
 
         let body: AnyElement = if showing_files {
             self.diff_list(&key, mono, cx)
@@ -860,16 +940,17 @@ impl Detail {
                                         .child(rust_i18n::t!("detail.comments").to_string()),
                                 )
                                 .children(comments)
-                        })
-                        .child(self.composer(cx)),
+                        }),
                 )
                 .into_any_element()
         };
+        let composer = (!showing_files).then(|| self.composer(item.is_pull(), cx));
 
         v_flex()
             .size_full()
             .child(head)
             .child(body)
+            .children(composer)
             .into_any_element()
     }
 
@@ -938,14 +1019,60 @@ impl Detail {
                     .child(rust_i18n::t!("detail.working").to_string()),
             );
         } else if !merged {
-            if mergeable {
-                let label = if self.confirm_merge {
-                    rust_i18n::t!("detail.merge.confirm").to_string()
-                } else {
-                    rust_i18n::t!("detail.merge").to_string()
-                };
+            if mergeable && self.confirm_merge {
+                // Armed: say how, then say yes. The method chips sit between
+                // the two presses, which is the only moment they matter.
+                let chosen = self.merge_method;
+                for method in MergeMethod::ALL {
+                    let method = *method;
+                    let label = rust_i18n::t!(match method {
+                        MergeMethod::Merge => "detail.merge.method.merge",
+                        MergeMethod::Squash => "detail.merge.method.squash",
+                        MergeMethod::Rebase => "detail.merge.method.rebase",
+                    })
+                    .to_string();
+                    row = row.child(self.chip(
+                        match method {
+                            MergeMethod::Merge => "method-merge",
+                            MergeMethod::Squash => "method-squash",
+                            MergeMethod::Rebase => "method-rebase",
+                        },
+                        label,
+                        method == chosen,
+                        None,
+                        cx,
+                        move |this, cx| {
+                            this.merge_method = method;
+                            cx.notify();
+                        },
+                    ));
+                }
                 row = row
-                    .child(self.action_button("merge", label, true, cx, |this, cx| this.merge(cx)));
+                    .child(self.action_button(
+                        "merge",
+                        rust_i18n::t!("detail.merge.confirm").to_string(),
+                        true,
+                        cx,
+                        |this, cx| this.merge(cx),
+                    ))
+                    .child(self.action_button(
+                        "merge-cancel",
+                        rust_i18n::t!("detail.merge.cancel").to_string(),
+                        false,
+                        cx,
+                        |this, cx| {
+                            this.confirm_merge = false;
+                            cx.notify();
+                        },
+                    ));
+            } else if mergeable {
+                row = row.child(self.action_button(
+                    "merge",
+                    rust_i18n::t!("detail.merge").to_string(),
+                    true,
+                    cx,
+                    |this, cx| this.merge(cx),
+                ));
             }
             let (label, to_open) = if open {
                 (rust_i18n::t!("detail.close").to_string(), false)
@@ -970,30 +1097,390 @@ impl Detail {
         row.into_any_element()
     }
 
-    /// The comment box under the conversation.
-    fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tokens = Tokens::global(cx).clone();
-        v_flex()
+    /// A small chip that can be picked: a label, a person, a project.
+    fn chip(
+        &self,
+        id: impl Into<ElementId>,
+        label: String,
+        selected: bool,
+        color: Option<Hsla>,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx);
+        let tint = color.unwrap_or(tokens.colors().accent);
+        div()
+            .id(id)
+            .px_2()
+            .py_0p5()
+            .rounded(px(tokens.radius.control()))
+            .cursor_pointer()
+            .text_size(px(11.5))
+            .border_1()
+            .when(selected, |this| {
+                this.bg(tint.opacity(0.22))
+                    .border_color(tint.opacity(0.5))
+                    .text_color(if color.is_some() {
+                        tint
+                    } else {
+                        tokens.colors().text_primary
+                    })
+            })
+            .when(!selected, |this| {
+                this.border_color(tokens.colors().border_subtle)
+                    .text_color(tokens.colors().text_secondary)
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+            })
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            .into_any_element()
+    }
+
+    /// One facet row: a muted name, what the item has, and the way to edit
+    /// it — which opens the picker under the rows.
+    fn facet_row(
+        &self,
+        picker: Picker,
+        name: String,
+        chips: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx);
+        let open = self.picker == Some(picker);
+        let id = match picker {
+            Picker::Labels => "facet-labels",
+            Picker::Assignees => "facet-assignees",
+            Picker::Projects => "facet-projects",
+        };
+        h_flex()
             .w_full()
             .gap_2()
-            .pt_2()
+            .items_center()
+            .flex_wrap()
             .child(
                 div()
+                    .w(px(64.))
+                    .flex_shrink_0()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(name),
+            )
+            .when(chips.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(tokens.colors().text_muted)
+                        .child(rust_i18n::t!("detail.none").to_string()),
+                )
+            })
+            .children(chips)
+            .child(
+                div()
+                    .id(id)
+                    .px_1p5()
+                    .rounded(px(tokens.radius.control()))
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().accent)
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                    .child(if open {
+                        rust_i18n::t!("detail.done").to_string()
+                    } else {
+                        rust_i18n::t!("detail.add").to_string()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_picker(picker, cx))),
+            )
+            .into_any_element()
+    }
+
+    /// The labels, the assignees and the projects, each editable in place.
+    fn facets(
+        &self,
+        key: &ItemKey,
+        detail: &crate::store::Detail,
+        labels: &[LabelChip],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let muted = tokens.colors().text_muted;
+        let item = detail.item.clone();
+        // Copied out of the store, so the chips below can bind listeners
+        // through `cx` without a read of the store held across them.
+        let (
+            avatars,
+            memberships,
+            offered_labels,
+            offered_people,
+            offered_projects,
+            membership_error,
+        ) = {
+            let store = self.store.read(cx);
+            let avatars: Vec<Option<std::path::PathBuf>> = item
+                .assignees
+                .iter()
+                .map(|user| store.avatar(&user.avatar_url))
+                .collect();
+            (
+                avatars,
+                store
+                    .memberships(key)
+                    .and_then(|fetch| fetch.value())
+                    .cloned()
+                    .unwrap_or_default(),
+                store.repo_labels(&key.0).cloned(),
+                store.candidates(&key.0).cloned(),
+                store.projects(&key.0.owner).cloned(),
+                store
+                    .memberships(key)
+                    .and_then(|fetch| fetch.error().map(str::to_string)),
+            )
+        };
+
+        // What the item has.
+        let label_chips: Vec<AnyElement> = labels
+            .iter()
+            .map(|label| {
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(tokens.radius.control()))
+                    .bg(label.fill())
+                    .text_size(px(11.5))
+                    .text_color(label.color)
+                    .child(label.name.clone())
+                    .into_any_element()
+            })
+            .collect();
+        let assignee_chips: Vec<AnyElement> = item
+            .assignees
+            .iter()
+            .zip(avatars)
+            .map(|(user, picture)| {
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(avatar(picture, &user.login, px(16.), cx))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(tokens.colors().text_secondary)
+                            .child(user.login.clone()),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let project_chips: Vec<AnyElement> = memberships
+            .iter()
+            .map(|membership| {
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(tokens.radius.control()))
+                    .bg(tokens.colors().code_bg)
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_secondary)
+                    .child(membership.title.clone())
+                    .into_any_element()
+            })
+            .collect();
+
+        // What the picker offers.
+        let picker: Option<AnyElement> = match self.picker {
+            None => None,
+            Some(Picker::Labels) => {
+                let chips: Vec<AnyElement> = offered_labels
+                    .as_ref()
+                    .and_then(|fetch| fetch.value())
+                    .map(|offered| {
+                        offered
+                            .iter()
+                            .enumerate()
+                            .map(|(index, label)| {
+                                let has = item.labels.iter().any(|mine| mine.name == label.name);
+                                let name = label.name.clone();
+                                let color = e1_ui::theme::parse_hex(&label.color).unwrap_or(muted);
+                                self.chip(
+                                    ("pick-label", index),
+                                    label.name.clone(),
+                                    has,
+                                    Some(color),
+                                    cx,
+                                    move |this, cx| this.toggle_label(name.clone(), has, cx),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(self.picker_body(chips, offered_labels.as_ref().and_then(|f| f.error()), cx))
+            }
+            Some(Picker::Assignees) => {
+                let chips: Vec<AnyElement> = offered_people
+                    .as_ref()
+                    .and_then(|fetch| fetch.value())
+                    .map(|people| {
+                        people
+                            .iter()
+                            .enumerate()
+                            .map(|(index, user)| {
+                                let has =
+                                    item.assignees.iter().any(|mine| mine.login == user.login);
+                                let login = user.login.clone();
+                                self.chip(
+                                    ("pick-assignee", index),
+                                    user.login.clone(),
+                                    has,
+                                    None,
+                                    cx,
+                                    move |this, cx| this.toggle_assignee(login.clone(), has, cx),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(self.picker_body(chips, offered_people.as_ref().and_then(|f| f.error()), cx))
+            }
+            Some(Picker::Projects) => {
+                let chips: Vec<AnyElement> = offered_projects
+                    .as_ref()
+                    .and_then(|fetch| fetch.value())
+                    .map(|projects| {
+                        projects
+                            .iter()
+                            .filter(|project| !project.closed)
+                            .enumerate()
+                            .map(|(index, project)| {
+                                let item_id = memberships
+                                    .iter()
+                                    .find(|m| m.project_id == project.id)
+                                    .map(|m| m.item_id.clone());
+                                let has = item_id.is_some();
+                                let project_id = project.id.clone();
+                                self.chip(
+                                    ("pick-project", index),
+                                    project.title.clone(),
+                                    has,
+                                    None,
+                                    cx,
+                                    move |this, cx| {
+                                        this.toggle_project(project_id.clone(), item_id.clone(), cx)
+                                    },
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let error = offered_projects
+                    .as_ref()
+                    .and_then(|f| f.error().map(str::to_string))
+                    .or(membership_error);
+                Some(self.picker_body(chips, error.as_deref(), cx))
+            }
+        };
+
+        v_flex()
+            .w_full()
+            .gap_1p5()
+            .child(self.facet_row(
+                Picker::Labels,
+                rust_i18n::t!("detail.labels").to_string(),
+                label_chips,
+                cx,
+            ))
+            .child(self.facet_row(
+                Picker::Assignees,
+                rust_i18n::t!("detail.assignees").to_string(),
+                assignee_chips,
+                cx,
+            ))
+            .child(self.facet_row(
+                Picker::Projects,
+                rust_i18n::t!("detail.projects").to_string(),
+                project_chips,
+                cx,
+            ))
+            .children(picker)
+            .into_any_element()
+    }
+
+    /// What a picker lists: chips, or why it could not.
+    fn picker_body(&self, chips: Vec<AnyElement>, error: Option<&str>, cx: &App) -> AnyElement {
+        let tokens = Tokens::global(cx);
+        div()
+            .w_full()
+            .p_2()
+            .rounded(px(tokens.radius.control() + 2.))
+            .bg(tokens.colors().bg_surface)
+            .border_1()
+            .border_color(tokens.colors().border_subtle)
+            .child(match error {
+                Some(error) => div()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().status_error)
+                    .child(error.to_string())
+                    .into_any_element(),
+                None if chips.is_empty() => div()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(rust_i18n::t!("detail.loading").to_string())
+                    .into_any_element(),
+                None => h_flex()
+                    .gap_1p5()
+                    .flex_wrap()
+                    .children(chips)
+                    .into_any_element(),
+            })
+            .into_any_element()
+    }
+
+    /// The comment box at the foot of the conversation, always in view:
+    /// a box that scrolled away with the thread had its button below the
+    /// fold more often than not. For a pull the same words can be a
+    /// review — approving, or asking for changes — so those are here too.
+    fn composer(&self, is_pull: bool, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let mut buttons = h_flex().w_full().justify_end().gap_1p5().items_center();
+        if is_pull {
+            buttons = buttons
+                .child(self.action_button(
+                    "request-changes",
+                    rust_i18n::t!("detail.review.request_changes").to_string(),
+                    false,
+                    cx,
+                    |this, cx| this.send_review(ReviewEvent::RequestChanges, cx),
+                ))
+                .child(self.action_button(
+                    "approve",
+                    rust_i18n::t!("detail.review.approve").to_string(),
+                    false,
+                    cx,
+                    |this, cx| this.send_review(ReviewEvent::Approve, cx),
+                ));
+        }
+        buttons = buttons.child(self.action_button(
+            "send-comment",
+            rust_i18n::t!("detail.comment.send").to_string(),
+            true,
+            cx,
+            |this, cx| this.send_comment(cx),
+        ));
+        div()
+            .w_full()
+            .px_5()
+            .pb_4()
+            .pt_2()
+            .child(
+                v_flex()
                     .w_full()
+                    .max_w(px(MEASURE))
                     .rounded(px(tokens.radius.control() + 2.))
                     .bg(tokens.colors().bg_surface)
                     .border_1()
                     .border_color(tokens.colors().border_subtle)
                     .p_1()
-                    .child(Textarea::new(&self.composer)),
+                    .gap_1()
+                    .child(Textarea::new(&self.composer))
+                    .child(buttons.pr_1().pb_0p5()),
             )
-            .child(h_flex().w_full().justify_end().child(self.action_button(
-                "send-comment",
-                rust_i18n::t!("detail.comment.send").to_string(),
-                true,
-                cx,
-                |this, cx| this.send_comment(cx),
-            )))
             .into_any_element()
     }
 

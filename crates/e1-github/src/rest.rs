@@ -165,6 +165,7 @@ impl Rest {
         let request = match method {
             "POST" => self.agent.post(&url),
             "PATCH" => self.agent.patch(&url),
+            "DELETE" => self.agent.delete(&url).force_send_body(),
             _ => self.agent.put(&url),
         };
         let mut response = request
@@ -190,6 +191,32 @@ impl Rest {
             path: path.to_string(),
             message,
         })
+    }
+
+    /// One GraphQL request. Projects are only reachable this way; everything
+    /// else stays on REST, where the `ETag` cache works.
+    ///
+    /// GraphQL answers `200` to a refused query and puts the refusal in
+    /// `errors`, so that is checked here rather than by status.
+    fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
+        let answer: serde_json::Value = self.send(
+            "POST",
+            "/graphql",
+            serde_json::json!({ "query": query, "variables": variables }),
+        )?;
+        if let Some(errors) = answer["errors"].as_array()
+            && let Some(first) = errors.first()
+        {
+            let message = first["message"]
+                .as_str()
+                .unwrap_or("GraphQL refused the query");
+            return Err(Error::Status {
+                status: 200,
+                path: "/graphql".into(),
+                message: message.to_string(),
+            });
+        }
+        Ok(answer["data"].clone())
     }
 
     /// Every page of a listing, up to [`PAGE_CAP`].
@@ -392,11 +419,153 @@ impl GitHub for Rest {
             .ok_or_else(|| Error::Decode("item without a repository".into()))
     }
 
-    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
+    fn merge(&self, repo: &RepoId, number: u64, method: MergeMethod) -> Result<()> {
         let _: serde_json::Value = self.send(
             "PUT",
             &format!("/repos/{repo}/pulls/{number}/merge"),
+            serde_json::json!({ "merge_method": method.as_api() }),
+        )?;
+        Ok(())
+    }
+
+    fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
+        let mut payload = serde_json::json!({ "event": event.as_api() });
+        if !body.trim().is_empty() {
+            payload["body"] = serde_json::Value::String(body.to_string());
+        }
+        let _: serde_json::Value = self.send(
+            "POST",
+            &format!("/repos/{repo}/pulls/{number}/reviews"),
+            payload,
+        )?;
+        Ok(())
+    }
+
+    fn labels(&self, repo: &RepoId) -> Result<Vec<Label>> {
+        let pages: Vec<WireLabel> =
+            self.get_pages(&format!("/repos/{repo}/labels?per_page=100"))?;
+        Ok(pages.into_iter().map(Into::into).collect())
+    }
+
+    fn add_labels(&self, repo: &RepoId, number: u64, labels: &[String]) -> Result<Item> {
+        let _: serde_json::Value = self.send(
+            "POST",
+            &format!("/repos/{repo}/issues/{number}/labels"),
+            serde_json::json!({ "labels": labels }),
+        )?;
+        self.item(repo, number)
+    }
+
+    fn remove_label(&self, repo: &RepoId, number: u64, label: &str) -> Result<Item> {
+        let encoded = encode_query(label);
+        let _: serde_json::Value = self.send(
+            "DELETE",
+            &format!("/repos/{repo}/issues/{number}/labels/{encoded}"),
             serde_json::json!({}),
+        )?;
+        self.item(repo, number)
+    }
+
+    fn assignees(&self, repo: &RepoId) -> Result<Vec<User>> {
+        let pages: Vec<WireUser> =
+            self.get_pages(&format!("/repos/{repo}/assignees?per_page=100"))?;
+        Ok(pages.into_iter().map(Into::into).collect())
+    }
+
+    fn add_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let _: serde_json::Value = self.send(
+            "POST",
+            &format!("/repos/{repo}/issues/{number}/assignees"),
+            serde_json::json!({ "assignees": logins }),
+        )?;
+        self.item(repo, number)
+    }
+
+    fn remove_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let _: serde_json::Value = self.send(
+            "DELETE",
+            &format!("/repos/{repo}/issues/{number}/assignees"),
+            serde_json::json!({ "assignees": logins }),
+        )?;
+        self.item(repo, number)
+    }
+
+    fn projects(&self, owner: &str) -> Result<Vec<Project>> {
+        // An owner is a user or an organisation and the API will not say
+        // which without a round trip; asking both in one query is cheaper
+        // than asking which.
+        let query = r#"query($login: String!) {
+            user(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed } } }
+            organization(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed } } }
+        }"#;
+        let data = self.graphql(query, serde_json::json!({ "login": owner }))?;
+        let mut projects = Vec::new();
+        for owner_kind in ["user", "organization"] {
+            if let Some(nodes) = data[owner_kind]["projectsV2"]["nodes"].as_array() {
+                for node in nodes {
+                    projects.push(Project {
+                        id: node["id"].as_str().unwrap_or_default().to_string(),
+                        title: node["title"].as_str().unwrap_or_default().to_string(),
+                        number: node["number"].as_u64().unwrap_or_default(),
+                        closed: node["closed"].as_bool().unwrap_or(false),
+                    });
+                }
+            }
+        }
+        Ok(projects)
+    }
+
+    fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
+        let query = r#"query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+                issueOrPullRequest(number: $number) {
+                    ... on Issue { projectItems(first: 50) { nodes { id project { id title } } } }
+                    ... on PullRequest { projectItems(first: 50) { nodes { id project { id title } } } }
+                }
+            }
+        }"#;
+        let data = self.graphql(
+            query,
+            serde_json::json!({ "owner": repo.owner, "name": repo.name, "number": number }),
+        )?;
+        let nodes = data["repository"]["issueOrPullRequest"]["projectItems"]["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        Ok(nodes
+            .iter()
+            .map(|node| ProjectMembership {
+                project_id: node["project"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                title: node["project"]["title"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                item_id: node["id"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect())
+    }
+
+    fn add_to_project(&self, project_id: &str, node_id: &str) -> Result<()> {
+        let query = r#"mutation($project: ID!, $content: ID!) {
+            addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+        }"#;
+        self.graphql(
+            query,
+            serde_json::json!({ "project": project_id, "content": node_id }),
+        )?;
+        Ok(())
+    }
+
+    fn remove_from_project(&self, project_id: &str, item_id: &str) -> Result<()> {
+        let query = r#"mutation($project: ID!, $item: ID!) {
+            deleteProjectV2Item(input: {projectId: $project, itemId: $item}) { deletedItemId }
+        }"#;
+        self.graphql(
+            query,
+            serde_json::json!({ "project": project_id, "item": item_id }),
         )?;
         Ok(())
     }

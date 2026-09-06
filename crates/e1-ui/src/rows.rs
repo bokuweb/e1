@@ -258,6 +258,7 @@ mod tests {
         Item {
             repo: RepoId::new("bokuweb", "e1"),
             number: 7,
+            node_id: String::new(),
             title: "Draw the inbox".into(),
             kind: Kind::Pull {
                 draft: false,
