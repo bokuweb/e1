@@ -14,7 +14,8 @@ use crate::signin::{SignIn, SignInEvent};
 use crate::store::{ItemKey, Store, StoreEvent};
 use e1_github::auth::{Keychain, Source};
 use e1_github::{GitHub, HttpCache, Rest, Scripted, StatusFilter};
-use e1_ui::settings::{self, AppSettings};
+use e1_ui::Mode;
+use e1_ui::settings::{self, AppSettings, Appearance};
 use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -65,6 +66,9 @@ pub struct Shell {
     search: Entity<InputState>,
     /// What the centre column was last pointed at.
     current: Option<Focus>,
+    /// The appearance changed and the theme has to be installed at the next
+    /// frame, which is the first place with a window to ask.
+    retheme: bool,
     /// Whether there is a GitHub to draw. Without one the centre column is
     /// the sign-in screen.
     signed_in: bool,
@@ -139,6 +143,23 @@ impl Shell {
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
             SidebarEvent::SignOut => this.sign_out(cx),
+            SidebarEvent::CycleAppearance => this.cycle_appearance(cx),
+            SidebarEvent::OwnerToggled { owner, collapsed } => {
+                this.settings.collapsed_owners.retain(|o| o != owner);
+                if *collapsed {
+                    this.settings.collapsed_owners.push(owner.clone());
+                }
+                this.persist();
+            }
+        }));
+        // The OS can change its appearance while the window is open; when
+        // the setting is to follow it, the window follows.
+        subscriptions.push(window.observe_window_appearance({
+            let this = cx.entity().downgrade();
+            move |window, cx| {
+                this.update(cx, |this, cx| this.apply_theme(window, cx))
+                    .ok();
+            }
         }));
         subscriptions.push(cx.subscribe(&sign_in, |this, _, event, cx| match event {
             SignInEvent::SignedIn(token) => {
@@ -171,6 +192,10 @@ impl Shell {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_appearance(settings.appearance, cx);
+            sidebar.set_collapsed(settings.collapsed_owners.iter().cloned(), cx);
+        });
 
         let layout = Layout::from_settings(&settings);
         let mut this = Self {
@@ -185,6 +210,7 @@ impl Shell {
             sign_in,
             search,
             current: None,
+            retheme: false,
             signed_in,
             token_source,
             focus_handle,
@@ -272,6 +298,32 @@ impl Shell {
             }
             _ => self.list.update(cx, |list, cx| list.set_focus(focus, cx)),
         }
+        cx.notify();
+    }
+
+    /// Dark, then light, then the system's, then dark again.
+    fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
+        self.settings.appearance = match self.settings.appearance {
+            Appearance::Dark => Appearance::Light,
+            Appearance::Light => Appearance::System,
+            Appearance::System => Appearance::Dark,
+        };
+        self.persist();
+        let appearance = self.settings.appearance;
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_appearance(appearance, cx));
+        // The theme needs the window's appearance to resolve `System`, and
+        // a subscription callback has no window; the next frame does.
+        self.retheme = true;
+        cx.notify();
+    }
+
+    /// Install the theme the setting and the OS agree on, and redraw
+    /// everything: the tokens are a global, so every view has to look again.
+    fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = Mode::resolve(self.settings.appearance, window.appearance());
+        e1_ui::theme::apply(mode, cx);
+        window.refresh();
         cx.notify();
     }
 
@@ -683,7 +735,11 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.retheme {
+            self.retheme = false;
+            self.apply_theme(window, cx);
+        }
         let tokens = Tokens::global(cx).clone();
         let sidebar_open = self.layout.is_open(Panel::Sidebar);
         let right_open = self.layout.is_open(Panel::RightPanel);
@@ -735,9 +791,15 @@ impl Render for Shell {
                         })
                         .when(sidebar_open, |this| {
                             this.child(
+                                // `flex_none`: a sized column keeps the
+                                // width it was given, and only the centre
+                                // grows into what the window has. Without
+                                // it every column grew equally, and
+                                // dragging one divider moved the other.
                                 resizable_panel()
                                     .size(sidebar_width)
                                     .size_range(px(200.)..px(400.))
+                                    .flex_none()
                                     .child(
                                         v_flex()
                                             .size_full()
@@ -761,6 +823,7 @@ impl Render for Shell {
                                 resizable_panel()
                                     .size(right_width)
                                     .size_range(px(280.)..px(720.))
+                                    .flex_none()
                                     .child(
                                         v_flex()
                                             .size_full()

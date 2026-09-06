@@ -43,7 +43,13 @@ Identical to Ginka's `docs/ui.md` §2, from the same `assets/themes/*.json`. The
 | Closed issue | `accent` | circle with a check |
 | Unread notification | `accent` | 6 px dot before the title |
 
-Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, sidebar 250 (200–400), right panel 420 (280–720).
+Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, sidebar 250 (200–400), right panel 420 (280–720). The two sized columns are `flex_none`: only the centre grows into what the window has, which is what keeps one divider from moving the other.
+
+The palette is Ginka's with the saturation eased a touch (backgrounds ×0.85, accent and status ×0.92, text ×0.9): the same hues, a little less of them, so a full day in the window does not tire.
+
+### Type
+
+The system UI font, at the reference's sizes: sidebar rows and list titles 14 px, metadata 12 px, the detail body and comments 15 px on a 1.6 line height, code and paths in the mono family at 12 px.
 
 ## 3. Regions
 
@@ -55,8 +61,8 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 - **Header** — the viewer's avatar at 20 px (their initial until it arrives) and their login in bold, or *not signed in* muted. No app name and no logo: a window's title is what it is showing, and the person whose inbox this is says more than the app's name would.
 - **Sections** — four fixed rows, each an icon and a label, with a right-aligned count when it is known (unread for the inbox): Inbox, My pulls, Reviews (review requested), Assigned. Selected = `row.active` fill.
-- **Repositories** — a small muted label, then one row per repository the viewer can reach, most recently pushed first: `owner/name` truncated from the left, a lock glyph when private. Picking one lists its pulls; the kind toggle is in the centre strip.
-- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, and the sign-out mark.
+- **Repositories** — a small muted label, then the repositories grouped under their owner, the way the reference groups chats under a project: an owner heading (chevron, the owner's name muted, a count) that folds its group and remembers that it did, and under it one row per repository, indented, the name alone since the heading already says whose, with a lock glyph when private. Owners are ordered by their most recently pushed repository, and the repositories inside the same way. Picking one lists its pulls; the kind toggle is in the centre strip.
+- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, then the appearance control (a moon, a sun, or half of each for *follow the system*; a click moves to the next), and the sign-out mark.
 
 ### 3.3 Centre — the list, the finder, or a search
 

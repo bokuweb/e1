@@ -386,10 +386,14 @@ impl Detail {
                     ),
             )
             .child(
-                div().pl_7().child(
-                    TextView::markdown(("comment", comment.id as usize), comment.body.clone())
-                        .selectable(true),
-                ),
+                div()
+                    .pl_7()
+                    .text_size(px(15.))
+                    .line_height(relative(1.6))
+                    .child(
+                        TextView::markdown(("comment", comment.id as usize), comment.body.clone())
+                            .selectable(true),
+                    ),
             )
             .into_any_element()
     }
@@ -836,12 +840,20 @@ impl Detail {
                                 .child(rust_i18n::t!("detail.no_body").to_string())
                                 .into_any_element()
                         } else {
-                            TextView::markdown(
-                                SharedString::from(format!("body:{}/{}", item.repo, item.number)),
-                                item.body.clone(),
-                            )
-                            .selectable(true)
-                            .into_any_element()
+                            div()
+                                .text_size(px(15.))
+                                .line_height(relative(1.6))
+                                .child(
+                                    TextView::markdown(
+                                        SharedString::from(format!(
+                                            "body:{}/{}",
+                                            item.repo, item.number
+                                        )),
+                                        item.body.clone(),
+                                    )
+                                    .selectable(true),
+                                )
+                                .into_any_element()
                         })
                         .when(!comments.is_empty(), |this| {
                             this.child(div().h_px().w_full().bg(tokens.colors().border_subtle))

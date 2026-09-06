@@ -2,23 +2,31 @@
   "name": "Ginka Dark",
   "appearance": "dark",
   "colors": {
-    "bg.window": "#0E0A14D1",
-    "bg.sidebar": "#120D19B3",
-    "bg.surface": "#1B1426A8",
-    "bg.raised": "#241A33B8",
-    "bg.terminal": "#0A0710",
+    "bg.window": "#0E0B13D1",
+    "bg.sidebar": "#120E18B3",
+    "bg.surface": "#1B1525A8",
+    "bg.raised": "#241C31B8",
+    "bg.terminal": "#0A080F",
     "border.subtle": "#FFFFFF0F",
     "border.strong": "#FFFFFF1F",
-    "text.primary": "#EDE9F5",
-    "text.secondary": "#A79FBC",
-    "text.muted": "#6F6885",
-    "accent": "#A78BFA",
-    "status.working": "#F472B6",
-    "status.attention": "#FBBF24",
-    "status.done": "#4ADE80",
-    "status.error": "#F87171",
-    "code.bg": "#A78BFA1A"
+    "text.primary": "#EDEAF4",
+    "text.secondary": "#A8A0BB",
+    "text.muted": "#706984",
+    "accent": "#A98FF6",
+    "status.working": "#EF77B6",
+    "status.attention": "#F2BB2D",
+    "status.done": "#50D882",
+    "status.error": "#F37676",
+    "code.bg": "#AB93F21A"
   },
-  "radius": { "window": 12.0, "card": 16.0, "panel": 10.0, "row": 9.0 },
-  "duration_ms": { "quick": 120, "standard": 260 }
+  "radius": {
+    "window": 12.0,
+    "card": 16.0,
+    "panel": 10.0,
+    "row": 9.0
+  },
+  "duration_ms": {
+    "quick": 120,
+    "standard": 260
+  }
 }

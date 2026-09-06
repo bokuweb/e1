@@ -29,7 +29,7 @@ pub mod time;
 pub use assets::Assets;
 pub use fetch::Fetch;
 pub use layout::{HEADER_HEIGHT, Layout, Panel, TRAFFIC_LIGHT_INSET};
-pub use nav::{Focus, RepoTab, Section};
+pub use nav::{Focus, OwnerGroup, RepoTab, Section, group_by_owner};
 pub use paths::Paths;
 pub use rows::{Glyph, ItemRow, LabelChip, Role};
 pub use settings::{AppSettings, Appearance};

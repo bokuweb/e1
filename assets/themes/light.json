@@ -3,22 +3,30 @@
   "appearance": "light",
   "colors": {
     "bg.window": "#F7F5FBE6",
-    "bg.sidebar": "#F1EEF8CC",
+    "bg.sidebar": "#F1EFF7CC",
     "bg.surface": "#FFFFFFCC",
-    "bg.raised": "#EAE5F5CC",
-    "bg.terminal": "#1B1524",
+    "bg.raised": "#EAE6F4CC",
+    "bg.terminal": "#1B1623",
     "border.subtle": "#1B152414",
     "border.strong": "#1B152433",
-    "text.primary": "#1B1524",
-    "text.secondary": "#544C66",
-    "text.muted": "#7C7490",
-    "accent": "#7C3AED",
-    "status.working": "#DB2777",
-    "status.attention": "#B45309",
-    "status.done": "#15803D",
-    "status.error": "#B91C1C",
-    "code.bg": "#7C3AED14"
+    "text.primary": "#1B1623",
+    "text.secondary": "#544D65",
+    "text.muted": "#7D758F",
+    "accent": "#7E41E6",
+    "status.working": "#D42E78",
+    "status.attention": "#AD5410",
+    "status.done": "#197C3E",
+    "status.error": "#B32222",
+    "code.bg": "#8047E014"
   },
-  "radius": { "window": 12.0, "card": 16.0, "panel": 10.0, "row": 9.0 },
-  "duration_ms": { "quick": 120, "standard": 260 }
+  "radius": {
+    "window": 12.0,
+    "card": 16.0,
+    "panel": 10.0,
+    "row": 9.0
+  },
+  "duration_ms": {
+    "quick": 120,
+    "standard": 260
+  }
 }

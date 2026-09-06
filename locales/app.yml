@@ -259,3 +259,13 @@ detail.merge.confirm:
 detail.working:
   en: Working…
   ja: 処理中…
+
+sidebar.appearance.dark:
+  en: "Dark. Click for light."
+  ja: "ダーク。クリックでライトに"
+sidebar.appearance.light:
+  en: "Light. Click to follow the system."
+  ja: "ライト。クリックでシステムに従う"
+sidebar.appearance.system:
+  en: "Following the system. Click for dark."
+  ja: "システムに従う。クリックでダークに"
