@@ -905,8 +905,16 @@ impl Detail {
         row.into_any_element()
     }
 
-    /// A facet's heading: its name and the gear that opens its picker.
-    fn facet_heading(&self, picker: Picker, name: String, cx: &mut Context<Self>) -> AnyElement {
+    /// A facet's row: its name, what the item has, and the gear that opens
+    /// its picker under the row.
+    fn facet_row(
+        &self,
+        picker: Picker,
+        name: String,
+        values: AnyElement,
+        popover: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tokens = Tokens::global(cx);
         let open = self.picker == Some(picker);
         let id = match picker {
@@ -916,10 +924,14 @@ impl Detail {
         };
         h_flex()
             .w_full()
+            .relative()
+            .py_1()
+            .gap_2()
             .items_center()
             .child(
                 div()
-                    .flex_1()
+                    .w(px(72.))
+                    .flex_shrink_0()
                     .text_size(px(11.5))
                     .font_medium()
                     .text_color(if open {
@@ -929,6 +941,7 @@ impl Detail {
                     })
                     .child(name),
             )
+            .child(div().flex_1().overflow_hidden().child(values))
             .child(
                 div()
                     .id(id)
@@ -947,6 +960,7 @@ impl Detail {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_picker(picker, cx))),
             )
+            .children(popover)
             .into_any_element()
     }
 
@@ -1009,6 +1023,10 @@ impl Detail {
     }
 
     /// The picker under a facet: a filter, then the rows that match it.
+    ///
+    /// Floated over the page with `deferred` and `anchored`, so opening it
+    /// does not push the conversation down, and closed by a press anywhere
+    /// outside it — a popover, the way GitHub's is, in place of a menu.
     fn picker(
         &self,
         placeholder: String,
@@ -1018,14 +1036,19 @@ impl Detail {
     ) -> AnyElement {
         let tokens = Tokens::global(cx);
         let _ = placeholder;
-        v_flex()
-            .w_full()
-            .mt_1()
+        let card = v_flex()
+            .id("picker")
+            .w(px(360.))
             .rounded(px(tokens.radius.panel))
-            .bg(tokens.colors().bg_raised)
+            .bg(tokens.colors().bg_raised.opacity(1.0))
             .border_1()
             .border_color(tokens.colors().border_strong)
+            .shadow_lg()
             .overflow_hidden()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.picker = None;
+                cx.notify();
+            }))
             .child(div().p_2().child(Input::new(&self.filter).cleanable(true)))
             .child(match error {
                 Some(error) => div()
@@ -1049,7 +1072,20 @@ impl Detail {
                     .overflow_y_scroll()
                     .children(rows)
                     .into_any_element(),
-            })
+            });
+        div()
+            .absolute()
+            .top(px(26.))
+            .left_0()
+            .child(
+                deferred(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card),
+                )
+                .with_priority(1),
+            )
             .into_any_element()
     }
 
@@ -1309,33 +1345,29 @@ impl Detail {
             )
         });
 
-        let rule = || div().h_px().w_full().bg(tokens.colors().border_subtle);
         v_flex()
             .w_full()
-            .gap_2()
-            .child(self.facet_heading(
+            .child(self.facet_row(
                 Picker::Labels,
                 rust_i18n::t!("detail.labels").to_string(),
+                label_values,
+                label_picker,
                 cx,
             ))
-            .child(label_values)
-            .children(label_picker)
-            .child(rule())
-            .child(self.facet_heading(
+            .child(self.facet_row(
                 Picker::Assignees,
                 rust_i18n::t!("detail.assignees").to_string(),
+                assignee_values.into_any_element(),
+                assignee_picker,
                 cx,
             ))
-            .child(assignee_values)
-            .children(assignee_picker)
-            .child(rule())
-            .child(self.facet_heading(
+            .child(self.facet_row(
                 Picker::Projects,
                 rust_i18n::t!("detail.projects").to_string(),
+                project_values,
+                project_picker,
                 cx,
             ))
-            .child(project_values)
-            .children(project_picker)
             .into_any_element()
     }
 
@@ -1355,12 +1387,14 @@ impl Detail {
         if !open {
             return None;
         }
-        let checks = self
-            .store
-            .read(cx)
-            .checks(&key.0, &pull.head_sha)
+        let checks_fetch = self.store.read(cx).checks(&key.0, &pull.head_sha).cloned();
+        let checks = checks_fetch
+            .as_ref()
             .and_then(|fetch| fetch.value())
             .cloned();
+        let checks_error = checks_fetch
+            .as_ref()
+            .and_then(|fetch| fetch.error().map(str::to_string));
         let busy = self
             .store
             .read(cx)
@@ -1415,6 +1449,11 @@ impl Detail {
         let (passed, failed, pending) = checks.as_ref().map(|c| c.tally()).unwrap_or_default();
         let overall = checks.as_ref().map(|c| c.overall());
         let (check_icon, check_title, check_sub) = match overall {
+            None if checks_error.is_some() => (
+                badge(red, IconName::Close),
+                rust_i18n::t!("checks.unknown").to_string(),
+                checks_error.clone().unwrap_or_default(),
+            ),
             None => (
                 badge(muted, IconName::LoaderCircle),
                 rust_i18n::t!("checks.unknown").to_string(),
@@ -1547,15 +1586,22 @@ impl Detail {
             (true, MergeMethod::Rebase) => "merge.confirm.rebase",
         })
         .to_string();
-        let button_color = if can_merge { green } else { muted };
+        let button_color = if can_merge {
+            tokens.colors().merge_button()
+        } else {
+            muted
+        };
         let merge_button = h_flex()
+            .h(px(30.))
             .rounded(px(tokens.radius.control()))
             .overflow_hidden()
             .child(
                 div()
                     .id("merge")
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .px_3()
-                    .py_1p5()
                     .bg(button_color)
                     .text_size(px(12.))
                     .font_medium()
@@ -1570,8 +1616,10 @@ impl Detail {
             .child(
                 div()
                     .id("merge-menu")
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .px_2()
-                    .py_1p5()
                     .bg(button_color)
                     .border_l_1()
                     .border_color(gpui::white().opacity(0.25))
@@ -1602,15 +1650,19 @@ impl Detail {
             )
         });
         let menu = self.merge_menu.then(|| {
-            v_flex()
-                .w_full()
-                .max_w(px(420.))
-                .mt_1()
+            let card = v_flex()
+                .id("merge-menu-card")
+                .w(px(400.))
                 .rounded(px(tokens.radius.panel))
-                .bg(tokens.colors().bg_raised)
+                .bg(tokens.colors().bg_raised.opacity(1.0))
                 .border_1()
                 .border_color(tokens.colors().border_strong)
+                .shadow_lg()
                 .overflow_hidden()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.merge_menu = false;
+                    cx.notify();
+                }))
                 .children(
                     MergeMethod::ALL
                         .iter()
@@ -1643,7 +1695,16 @@ impl Detail {
                                 },
                             )
                         }),
+                );
+            div().absolute().top(px(34.)).left_0().child(
+                deferred(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card),
                 )
+                .with_priority(1),
+            )
         });
 
         Some(
@@ -1671,6 +1732,7 @@ impl Detail {
                         .gap_2()
                         .child(
                             h_flex()
+                                .relative()
                                 .gap_2()
                                 .items_center()
                                 .child(merge_button)

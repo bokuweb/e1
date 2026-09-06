@@ -43,7 +43,7 @@ pub struct Snapshot {
 }
 
 /// The shape this build writes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// How many read items are kept. The recent ones are what a reader comes
 /// back to; the rest are one request away.
