@@ -999,7 +999,17 @@ impl Render for Shell {
                                     .w(self.layout.size(Panel::Sidebar))
                                     .h_full()
                                     .children(window_controls)
-                                    .child(self.sidebar.clone()),
+                                    // `flex_1` with a floor of zero: a view
+                                    // that took the column's full height
+                                    // under a 44 px strip ran 44 px past
+                                    // the window, taking its footer with it.
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .w_full()
+                                            .child(self.sidebar.clone()),
+                                    ),
                             )
                             .children(sidebar_handle)
                     }))
@@ -1009,7 +1019,12 @@ impl Render for Shell {
                             .h_full()
                             .min_w(CENTRE_MIN)
                             .overflow_hidden()
-                            .child(v_flex().size_full().child(column_header).child(centre)),
+                            .child(
+                                v_flex()
+                                    .size_full()
+                                    .child(column_header)
+                                    .child(div().flex_1().min_h_0().w_full().child(centre)),
+                            ),
                     )
                     .children(right_width.map(|width| {
                         div()
@@ -1025,7 +1040,13 @@ impl Render for Shell {
                                     .border_l_1()
                                     .border_color(tokens.colors().border_subtle)
                                     .children(right_header)
-                                    .child(self.detail.clone()),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .w_full()
+                                            .child(self.detail.clone()),
+                                    ),
                             )
                             .children(right_handle)
                     })),

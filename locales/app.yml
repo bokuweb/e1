@@ -306,3 +306,94 @@ detail.merge.method.rebase:
 detail.merge.cancel:
   en: Cancel
   ja: やめる
+
+checks.passed:
+  en: All checks have passed
+  ja: すべてのチェックが成功
+checks.passed_count:
+  en: "%{count} successful checks"
+  ja: "%{count} 件のチェックが成功"
+checks.failed:
+  en: Some checks were not successful
+  ja: 失敗したチェックがあります
+checks.failed_count:
+  en: "%{failed} failing, %{passed} successful"
+  ja: "%{failed} 件失敗、%{passed} 件成功"
+checks.pending:
+  en: Some checks haven't completed yet
+  ja: 完了していないチェックがあります
+checks.pending_count:
+  en: "%{count} in progress"
+  ja: "%{count} 件実行中"
+checks.none:
+  en: No checks on this commit
+  ja: このコミットにチェックはありません
+checks.details:
+  en: Details
+  ja: 詳細
+conflicts.none:
+  en: No conflicts with base branch
+  ja: ベースブランチとの競合はありません
+conflicts.auto:
+  en: Merging can be performed automatically.
+  ja: 自動でマージできます。
+conflicts.some:
+  en: This branch has conflicts that must be resolved
+  ja: このブランチには解決が必要な競合があります
+conflicts.unknown:
+  en: Checking for conflicts…
+  ja: 競合を確認中…
+merge.button.merge:
+  en: Merge pull request
+  ja: プルリクエストをマージ
+merge.button.squash:
+  en: Squash and merge
+  ja: スカッシュしてマージ
+merge.button.rebase:
+  en: Rebase and merge
+  ja: リベースしてマージ
+merge.confirm.merge:
+  en: Confirm merge
+  ja: マージを確定
+merge.confirm.squash:
+  en: Confirm squash and merge
+  ja: スカッシュしてマージを確定
+merge.confirm.rebase:
+  en: Confirm rebase and merge
+  ja: リベースしてマージを確定
+merge.method.merge.title:
+  en: Create a merge commit
+  ja: マージコミットを作成
+merge.method.merge.desc:
+  en: All commits from this branch will be added to the base branch via a merge commit.
+  ja: このブランチの全コミットをマージコミットでベースブランチに追加します。
+merge.method.squash.title:
+  en: Squash and merge
+  ja: スカッシュしてマージ
+merge.method.squash.desc:
+  en: The commits from this branch will be combined into one commit on the base branch.
+  ja: このブランチのコミットを 1 つにまとめてベースブランチに追加します。
+merge.method.rebase.title:
+  en: Rebase and merge
+  ja: リベースしてマージ
+merge.method.rebase.desc:
+  en: The commits from this branch will be rebased and added to the base branch.
+  ja: このブランチのコミットをリベースしてベースブランチに追加します。
+facet.filter.labels:
+  en: Filter labels
+  ja: ラベルを絞り込む
+facet.filter.assignees:
+  en: Type or choose a user
+  ja: ユーザーを入力または選択
+facet.filter.projects:
+  en: Filter projects
+  ja: プロジェクトを絞り込む
+facet.assign_self:
+  en: assign yourself
+  ja: 自分を担当にする
+facet.no_match:
+  en: Nothing matches
+  ja: 一致するものはありません
+checks.unknown:
+  en: Reading the checks…
+  ja: チェックを確認中…

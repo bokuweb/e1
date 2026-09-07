@@ -428,6 +428,20 @@ impl GitHub for Rest {
         Ok(())
     }
 
+    fn checks(&self, repo: &RepoId, sha: &str) -> Result<Checks> {
+        // Two kinds, both still in use: check runs (Actions and the apps)
+        // and commit statuses (older integrations). One list, the runs
+        // first.
+        let (runs, _): (WireCheckRuns, _) = self.get(&format!(
+            "/repos/{repo}/commits/{sha}/check-runs?per_page=100"
+        ))?;
+        let (combined, _): (WireCombinedStatus, _) =
+            self.get(&format!("/repos/{repo}/commits/{sha}/status"))?;
+        let mut all: Vec<CheckRun> = runs.check_runs.into_iter().map(Into::into).collect();
+        all.extend(combined.statuses.into_iter().map(Into::into));
+        Ok(Checks { runs: all })
+    }
+
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
         let mut payload = serde_json::json!({ "event": event.as_api() });
         if !body.trim().is_empty() {
