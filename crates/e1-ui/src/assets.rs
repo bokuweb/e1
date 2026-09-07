@@ -43,10 +43,6 @@ const ICONS: &[(&str, &str)] = &[
         include_str!("../../../assets/icons/user-check.svg"),
     ),
     (icon::E1, include_str!("../../../assets/icons/e1.svg")),
-    (
-        icon::SUN_MOON,
-        include_str!("../../../assets/icons/sun-moon.svg"),
-    ),
 ];
 
 /// Our icons, addressed the way [`gpui_component::Icon::path`] expects.
@@ -69,8 +65,6 @@ pub mod icon {
     pub const USER_CHECK: &str = "icons/user-check.svg";
     /// The app's own mark: an `E` and a `1`, painted in [`crate::Tokens::logo`].
     pub const E1: &str = "icons/e1.svg";
-    /// Follow the system's appearance: half sun, half moon.
-    pub const SUN_MOON: &str = "icons/sun-moon.svg";
     /// The toolkit's: the light theme.
     pub const SUN: &str = "icons/sun.svg";
     /// The toolkit's: the dark theme.
@@ -120,7 +114,6 @@ mod tests {
             icon::LOCK,
             icon::USER_CHECK,
             icon::E1,
-            icon::SUN_MOON,
         ] {
             let loaded = Assets
                 .load(path)

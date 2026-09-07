@@ -9,7 +9,6 @@ use crate::avatar::avatar;
 use crate::store::{Store, StoreEvent};
 use e1_github::Repo;
 use e1_ui::assets::icon;
-use e1_ui::settings::Appearance;
 use e1_ui::theme::ThemeAppearance;
 use e1_ui::{Focus, Section, Tokens, group_by_owner};
 use gpui::prelude::FluentBuilder as _;
@@ -24,8 +23,8 @@ pub enum SidebarEvent {
     Focus(Focus),
     /// Forget the token and go back to the sign-in screen.
     SignOut,
-    /// Move to the next appearance: dark, light, then the system's.
-    CycleAppearance,
+    /// Flip the window between light and dark.
+    ToggleAppearance,
     /// An owner's repositories were folded away, or shown again.
     OwnerToggled {
         /// Which owner.
@@ -41,8 +40,6 @@ impl EventEmitter<SidebarEvent> for Sidebar {}
 pub struct Sidebar {
     store: Entity<Store>,
     selected: Option<Focus>,
-    /// The appearance the window is set to, for the footer's control.
-    appearance: Appearance,
     /// The owners whose repositories are folded away.
     collapsed: HashSet<String>,
 }
@@ -68,15 +65,8 @@ impl Sidebar {
         Self {
             store,
             selected: None,
-            appearance: Appearance::System,
             collapsed: HashSet::new(),
         }
-    }
-
-    /// Tell the footer's control what the window is set to.
-    pub fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
-        self.appearance = appearance;
-        cx.notify();
     }
 
     /// Fold these owners' repositories away, as the settings remember.
@@ -310,20 +300,12 @@ impl Sidebar {
     /// click to move to the next.
     fn appearance_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
-        // Following the system looks like doing nothing when the system
-        // already agrees with the last choice, so the tip says which way it
-        // has been resolved rather than leaving the reader to wonder.
-        let resolved = match tokens.appearance {
-            ThemeAppearance::Light => rust_i18n::t!("sidebar.appearance.mode_light"),
-            ThemeAppearance::Dark => rust_i18n::t!("sidebar.appearance.mode_dark"),
-        };
-        let (path, tip) = match self.appearance {
-            Appearance::Dark => (icon::MOON, rust_i18n::t!("sidebar.appearance.dark")),
-            Appearance::Light => (icon::SUN, rust_i18n::t!("sidebar.appearance.light")),
-            Appearance::System => (
-                icon::SUN_MOON,
-                rust_i18n::t!("sidebar.appearance.system", mode = resolved),
-            ),
+        // What is drawn is the theme that is installed, not a copy of the
+        // setting: there may be no setting yet, and the two cannot drift if
+        // only one of them exists.
+        let (path, tip) = match tokens.appearance {
+            ThemeAppearance::Dark => (icon::MOON, rust_i18n::t!("sidebar.appearance.dark")),
+            ThemeAppearance::Light => (icon::SUN, rust_i18n::t!("sidebar.appearance.light")),
         };
         let tip = tip.to_string();
         div()
@@ -339,7 +321,7 @@ impl Sidebar {
                     .size_3p5()
                     .text_color(tokens.colors().text_muted),
             )
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::CycleAppearance)))
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::ToggleAppearance)))
     }
 
     /// Whose window this is.

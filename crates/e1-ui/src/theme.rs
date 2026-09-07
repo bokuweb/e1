@@ -25,15 +25,16 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Resolve the user's choice against the window's actual appearance.
+    /// Resolve the reader's choice against the window's actual appearance.
     ///
-    /// `Appearance::System` is not a third theme: it is a deferral to the OS,
-    /// and the OS answer can change while the app is running.
-    pub fn resolve(choice: Appearance, system: WindowAppearance) -> Self {
+    /// No choice is not a third theme: it is what the window opens on
+    /// before anyone has picked, which is whatever the OS is showing, and
+    /// the OS answer can change while the app is running.
+    pub fn resolve(choice: Option<Appearance>, system: WindowAppearance) -> Self {
         match choice {
-            Appearance::Light => Self::Light,
-            Appearance::Dark => Self::Dark,
-            Appearance::System => match system {
+            Some(Appearance::Light) => Self::Light,
+            Some(Appearance::Dark) => Self::Dark,
+            None => match system {
                 WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
                 WindowAppearance::Light | WindowAppearance::VibrantLight => Self::Light,
             },
@@ -475,18 +476,19 @@ mod tests {
     }
 
     #[test]
-    fn system_appearance_defers_to_the_os_but_an_explicit_choice_wins() {
+    fn an_unmade_choice_takes_the_os_and_a_made_one_wins() {
+        assert_eq!(Mode::resolve(None, WindowAppearance::Dark), Mode::Dark);
         assert_eq!(
-            Mode::resolve(Appearance::System, WindowAppearance::Dark),
+            Mode::resolve(None, WindowAppearance::VibrantLight),
+            Mode::Light
+        );
+        assert_eq!(
+            Mode::resolve(Some(Appearance::Light), WindowAppearance::Dark),
+            Mode::Light
+        );
+        assert_eq!(
+            Mode::resolve(Some(Appearance::Dark), WindowAppearance::Light),
             Mode::Dark
-        );
-        assert_eq!(
-            Mode::resolve(Appearance::System, WindowAppearance::VibrantLight),
-            Mode::Light
-        );
-        assert_eq!(
-            Mode::resolve(Appearance::Light, WindowAppearance::Dark),
-            Mode::Light
         );
     }
 
