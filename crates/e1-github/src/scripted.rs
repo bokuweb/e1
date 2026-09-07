@@ -35,6 +35,7 @@ struct Data {
     trees: HashMap<RepoId, Tree>,
     contents: HashMap<(RepoId, String), String>,
     memberships: Vec<((RepoId, u64), ProjectMembership)>,
+    review_comments: Vec<((RepoId, u64), ReviewComment)>,
     /// When set, every call fails with this. For testing the error states.
     failing: Option<String>,
 }
@@ -635,6 +636,8 @@ impl GitHub for Scripted {
         // A head that says so fails; everything else passes, with one run
         // still going on a draft so the pending state has a face.
         let run = |name: &str, state: CheckState| CheckRun {
+            id: if name == "build" { 1 } else { 2 },
+            actions: true,
             name: name.to_string(),
             state,
             html_url: Some("https://github.com/bokuweb/e1/actions".into()),
@@ -657,6 +660,68 @@ impl GitHub for Scripted {
                 ]
             },
         })
+    }
+
+    fn review_comments(&self, repo: &RepoId, number: u64) -> Result<Vec<ReviewComment>> {
+        let data = self.guard()?;
+        Ok(data
+            .review_comments
+            .iter()
+            .filter(|(key, _)| key == &(repo.clone(), number))
+            .map(|(_, comment)| comment.clone())
+            .collect())
+    }
+
+    fn review_comment(
+        &self,
+        repo: &RepoId,
+        number: u64,
+        _commit: &str,
+        path: &str,
+        line: u32,
+        side: Side,
+        body: &str,
+    ) -> Result<ReviewComment> {
+        let mut data = self.guard()?;
+        let author = data
+            .viewer
+            .as_ref()
+            .map(|viewer| viewer.login.clone())
+            .unwrap_or_else(|| "you".into());
+        let comment = ReviewComment {
+            id: 5000 + data.review_comments.len() as u64,
+            path: path.to_string(),
+            line: Some(line),
+            side,
+            author: user(&author),
+            created_at: Utc::now(),
+            body: body.to_string(),
+            html_url: String::new(),
+        };
+        data.review_comments
+            .push(((repo.clone(), number), comment.clone()));
+        Ok(comment)
+    }
+
+    fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| item.node_id == node_id)
+            .ok_or(Error::Unsupported("change a missing pull"))?;
+        if let Kind::Pull { merged, .. } = item.kind {
+            item.kind = Kind::Pull { draft, merged };
+        }
+        Ok(())
+    }
+
+    fn job_log(&self, _repo: &RepoId, job_id: u64) -> Result<String> {
+        let _guard = self.guard()?;
+        Ok((1..=40)
+            .map(|n| format!("2026-09-07T00:00:{n:02}.000Z job {job_id}: step {n} of 40 … ok"))
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
@@ -974,6 +1039,30 @@ mod tests {
             .remove_from_project(&projects[0].id, &memberships[0].item_id)
             .unwrap();
         assert!(github.item_projects(&e1, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn line_comments_drafts_and_logs_round_trip() {
+        let github = Scripted::sample();
+        let e1 = RepoId::new("bokuweb", "e1");
+        assert!(github.review_comments(&e1, 7).unwrap().is_empty());
+        let comment = github
+            .review_comment(&e1, 7, "sha", "src/main.rs", 4, Side::Right, "Why here?")
+            .unwrap();
+        assert_eq!(comment.line, Some(4));
+        assert_eq!(github.review_comments(&e1, 7).unwrap().len(), 1);
+
+        let node = github.item(&e1, 6).unwrap().node_id;
+        assert_eq!(github.item(&e1, 6).unwrap().state(), State::Draft);
+        github.set_draft(&node, false).unwrap();
+        assert_eq!(github.item(&e1, 6).unwrap().state(), State::Open);
+        github.set_draft(&node, true).unwrap();
+        assert_eq!(github.item(&e1, 6).unwrap().state(), State::Draft);
+
+        let log = github.job_log(&e1, 1).unwrap();
+        assert_eq!(log.lines().count(), 40);
+        let checks = github.checks(&e1, "sha-inbox-rows").unwrap();
+        assert!(checks.runs.iter().all(|run| run.actions && run.id > 0));
     }
 
     #[test]

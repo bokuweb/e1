@@ -284,7 +284,17 @@ pub(crate) struct WireCheckRuns {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct WireApp {
+    #[serde(default)]
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct WireCheckRun {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub app: Option<WireApp>,
     pub name: String,
     #[serde(default)]
     pub status: String,
@@ -306,9 +316,47 @@ impl From<WireCheckRun> for CheckRun {
             }
         };
         Self {
+            id: run.id,
+            actions: run
+                .app
+                .as_ref()
+                .is_some_and(|app| app.slug == "github-actions"),
             name: run.name,
             state,
             html_url: run.html_url,
+        }
+    }
+}
+
+/// What `/pulls/{n}/comments` sends: a comment on a line of the diff.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireReviewComment {
+    pub id: u64,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<String>,
+    pub user: WireUser,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl From<WireReviewComment> for ReviewComment {
+    fn from(comment: WireReviewComment) -> Self {
+        Self {
+            id: comment.id,
+            path: comment.path,
+            line: comment.line,
+            side: Side::parse(comment.side.as_deref().unwrap_or("RIGHT")),
+            author: comment.user.into(),
+            created_at: comment.created_at,
+            body: comment.body,
+            html_url: comment.html_url,
         }
     }
 }
@@ -338,6 +386,8 @@ impl From<WireStatus> for CheckRun {
             _ => CheckState::Failure,
         };
         Self {
+            id: 0,
+            actions: false,
             name: status.context,
             state,
             html_url: status.target_url,

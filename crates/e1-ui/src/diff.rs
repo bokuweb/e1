@@ -114,9 +114,103 @@ fn hunk_starts(header: &str) -> (u32, u32) {
     (old.saturating_sub(1), new.saturating_sub(1))
 }
 
+/// One row of a side-by-side view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitRow {
+    /// A hunk header, across both sides.
+    Hunk(String),
+    /// The old file's line on the left, the new file's on the right. A
+    /// context line is on both; an addition has no left; a removal no
+    /// right; a removal paired with the addition that replaced it has both.
+    Pair {
+        /// The old file's line.
+        left: Option<Line>,
+        /// The new file's line.
+        right: Option<Line>,
+    },
+}
+
+/// Lay the lines out side by side.
+///
+/// Removals and the additions that follow them in the same run are
+/// paired off in order, which is what makes a changed line read as one
+/// row with its before on the left and its after on the right; the
+/// leftovers of the longer run stand alone. Context lines sit on both
+/// sides.
+pub fn split(lines: &[Line]) -> Vec<SplitRow> {
+    let mut rows = Vec::new();
+    let mut removed: Vec<Line> = Vec::new();
+    let mut added: Vec<Line> = Vec::new();
+    let flush = |rows: &mut Vec<SplitRow>, removed: &mut Vec<Line>, added: &mut Vec<Line>| {
+        let count = removed.len().max(added.len());
+        let mut removed = removed.drain(..);
+        let mut added = added.drain(..);
+        for _ in 0..count {
+            rows.push(SplitRow::Pair {
+                left: removed.next(),
+                right: added.next(),
+            });
+        }
+    };
+    for line in lines {
+        match line.kind {
+            Kind::Removed => removed.push(line.clone()),
+            Kind::Added => added.push(line.clone()),
+            Kind::Hunk => {
+                flush(&mut rows, &mut removed, &mut added);
+                rows.push(SplitRow::Hunk(line.text.clone()));
+            }
+            Kind::Context => {
+                flush(&mut rows, &mut removed, &mut added);
+                rows.push(SplitRow::Pair {
+                    left: Some(line.clone()),
+                    right: Some(line.clone()),
+                });
+            }
+        }
+    }
+    flush(&mut rows, &mut removed, &mut added);
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replaced_line_reads_as_one_row_and_the_leftovers_stand_alone() {
+        let rows = split(&parse(PATCH));
+        assert_eq!(
+            rows[0],
+            SplitRow::Hunk("@@ -10,3 +10,4 @@ fn main() {".into())
+        );
+        // context: both sides
+        assert!(
+            matches!(&rows[1], SplitRow::Pair { left: Some(l), right: Some(r) } if l.text == "context" && r.text == "context")
+        );
+        // "gone" replaced by "here": one row
+        assert!(
+            matches!(&rows[2], SplitRow::Pair { left: Some(l), right: Some(r) } if l.text == "gone" && r.text == "here")
+        );
+        // the second addition has no partner
+        assert!(
+            matches!(&rows[3], SplitRow::Pair { left: None, right: Some(r) } if r.text == "and here")
+        );
+        assert!(matches!(
+            &rows[4],
+            SplitRow::Pair {
+                left: Some(_),
+                right: Some(_)
+            }
+        ));
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn a_removal_with_nothing_after_it_keeps_its_side() {
+        let rows = split(&parse("@@ -1,2 +1 @@\n a\n-b"));
+        assert!(matches!(&rows[2], SplitRow::Pair { left: Some(l), right: None } if l.text == "b"));
+    }
 
     const PATCH: &str = "@@ -10,3 +10,4 @@ fn main() {\n context\n-gone\n+here\n+and here\n more";
 

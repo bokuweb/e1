@@ -377,6 +377,15 @@ impl Colors {
         self.accent.opacity(0.22)
     }
 
+    /// A popover's fill: the raised surface made opaque, because a menu
+    /// that floats over text has to hide it — `Hsla::opacity` multiplies
+    /// the alpha, so it cannot get there from a translucent token.
+    pub fn popover(&self) -> Hsla {
+        let mut color = self.bg_raised;
+        color.a = 1.0;
+        color
+    }
+
     /// The merge button: the done colour deepened until white reads on it.
     /// The status green is made for a glyph on the glass, not for a fill
     /// under text, and white on it was the least legible thing on the page.
@@ -446,6 +455,11 @@ mod tests {
             Mode::resolve(Appearance::Light, WindowAppearance::Dark),
             Mode::Light
         );
+    }
+
+    #[test]
+    fn a_popover_is_opaque() {
+        assert!(Tokens::load(Mode::Dark).colors.popover().a > 0.99);
     }
 
     #[test]

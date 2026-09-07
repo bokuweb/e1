@@ -17,7 +17,9 @@
 use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
-use e1_github::{CheckState, Comment, FileStatus, MergeMethod, ReviewEvent};
+use e1_github::{
+    CheckState, Comment, FileStatus, MergeMethod, RepoId, ReviewComment, ReviewEvent, Side,
+};
 use e1_ui::Tokens;
 use e1_ui::diff;
 use e1_ui::rows::{Glyph, LabelChip};
@@ -56,6 +58,12 @@ enum Showing {
     Item(ItemKey),
     /// A file out of a repository's tree.
     File(FileKey),
+    /// The log of an Actions job.
+    Log {
+        repo: RepoId,
+        job: u64,
+        name: String,
+    },
 }
 
 /// One row of the diff list.
@@ -69,8 +77,20 @@ enum DiffRow {
         deletions: u64,
         collapsed: bool,
     },
-    /// A line of a diff.
-    Line(diff::Line),
+    /// A line of a diff, in the unified view. Clicking it opens a comment.
+    Line { path: String, line: diff::Line },
+    /// Two lines side by side, in the split view.
+    Pair {
+        path: String,
+        left: Option<diff::Line>,
+        right: Option<diff::Line>,
+    },
+    /// A hunk header in the split view.
+    Hunk(SharedString),
+    /// A comment someone left on the line above.
+    Comment(ReviewComment),
+    /// The comment being written on the line above.
+    Composer,
     /// A file with nothing to show under it.
     Note(SharedString),
 }
@@ -117,6 +137,17 @@ pub struct Detail {
     confirm_merge: bool,
     /// The checks card is unfolded to its runs.
     checks_open: bool,
+    /// The diff's rows, virtualized with variable heights: a comment is
+    /// taller than a line.
+    diff_state: ListState,
+    /// Side by side rather than unified.
+    split: bool,
+    /// The line a comment is being written on, if one is.
+    composing: Option<(String, u32, Side)>,
+    /// The comment being written on a line.
+    review_input: Entity<TextareaState>,
+    /// Empty the line composer at the next frame.
+    clear_review: bool,
 }
 
 impl Detail {
@@ -140,6 +171,11 @@ impl Detail {
         })
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx));
+        let review_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder(rust_i18n::t!("diff.comment.placeholder").to_string())
+                .auto_grow(2, 6)
+        });
         cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -162,6 +198,69 @@ impl Detail {
             merge_method: MergeMethod::default(),
             confirm_merge: false,
             checks_open: false,
+            diff_state: ListState::new(0, ListAlignment::Top, px(300.)),
+            split: false,
+            composing: None,
+            review_input,
+            clear_review: false,
+        }
+    }
+
+    /// Show an Actions job's log.
+    pub fn show_log(&mut self, repo: RepoId, job: u64, name: String, cx: &mut Context<Self>) {
+        self.showing = Some(Showing::Log {
+            repo: repo.clone(),
+            job,
+            name,
+        });
+        self.store
+            .update(cx, |store, cx| store.ensure_log(repo, job, cx));
+        self.rebuild(cx);
+    }
+
+    fn set_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.split = split;
+        self.rebuild(cx);
+    }
+
+    /// Open a comment box under a line of the diff.
+    fn start_line_comment(&mut self, path: String, line: u32, side: Side, cx: &mut Context<Self>) {
+        self.composing = Some((path, line, side));
+        self.clear_review = true;
+        self.rebuild(cx);
+    }
+
+    fn cancel_line_comment(&mut self, cx: &mut Context<Self>) {
+        self.composing = None;
+        self.rebuild(cx);
+    }
+
+    /// Post the line comment at the pull's head.
+    fn send_line_comment(&mut self, cx: &mut Context<Self>) {
+        let (Some(key), Some((path, line, side))) = (self.item_key(), self.composing.clone())
+        else {
+            return;
+        };
+        let body = self.review_input.read(cx).value().trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+        let Some(commit) = self.head_sha(cx) else {
+            return;
+        };
+        self.composing = None;
+        self.clear_review = true;
+        self.store.update(cx, |store, cx| {
+            store.review_comment(key, commit, path, line, side, body, cx)
+        });
+        self.rebuild(cx);
+    }
+
+    fn set_draft(&mut self, draft: bool, cx: &mut Context<Self>) {
+        if let Some(key) = self.item_key() {
+            self.store
+                .update(cx, |store, cx| store.set_draft(key, draft, cx));
+            cx.notify();
         }
     }
 
@@ -298,6 +397,7 @@ impl Detail {
             self.merge_menu = false;
             self.picker = None;
             self.checks_open = false;
+            self.composing = None;
         }
         self.showing = Some(showing);
         self.store
@@ -355,6 +455,10 @@ impl Detail {
                 self.store
                     .update(cx, |store, cx| store.load_content(key, cx));
             }
+            Some(Showing::Log { repo, job, .. }) => {
+                self.store
+                    .update(cx, |store, cx| store.load_log(repo, job, cx));
+            }
             None => {}
         }
     }
@@ -371,6 +475,7 @@ impl Detail {
                 .content(key)
                 .and_then(|content| content.value())
                 .map(|content| content.html_url.clone()),
+            Showing::Log { .. } => None,
         }
     }
 
@@ -391,8 +496,10 @@ impl Detail {
         if tab == Tab::Files
             && let Some(key) = self.item_key()
         {
-            self.store
-                .update(cx, |store, cx| store.ensure_pull_files(key, cx));
+            self.store.update(cx, |store, cx| {
+                store.ensure_pull_files(key.clone(), cx);
+                store.ensure_review_comments(key, cx);
+            });
         }
         self.rebuild(cx);
     }
@@ -439,16 +546,49 @@ impl Detail {
         }
         match &self.showing {
             Some(Showing::Item(key)) if self.tab == Tab::Files => {
-                let files = self
-                    .store
-                    .read(cx)
-                    .pull_files(key)
-                    .and_then(|fetch| fetch.value())
-                    .cloned()
-                    .unwrap_or_default();
+                let (files, comments) = {
+                    let store = self.store.read(cx);
+                    (
+                        store
+                            .pull_files(key)
+                            .and_then(|fetch| fetch.value())
+                            .cloned()
+                            .unwrap_or_default(),
+                        store
+                            .review_comments(key)
+                            .and_then(|fetch| fetch.value())
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                };
+                let composing = self.composing.clone();
+                // The comments and the composer hang under the line they
+                // are about, so a line's row is followed by theirs.
+                let after_line = |rows: &mut Vec<DiffRow>, path: &str, line: &diff::Line| {
+                    for comment in comments.iter().filter(|comment| {
+                        comment.path == path
+                            && comment.line.is_some()
+                            && match comment.side {
+                                Side::Left => comment.line == line.old,
+                                Side::Right => comment.line == line.new,
+                            }
+                    }) {
+                        rows.push(DiffRow::Comment(comment.clone()));
+                    }
+                    if let Some((c_path, c_line, c_side)) = &composing
+                        && c_path == path
+                        && match c_side {
+                            Side::Left => line.old == Some(*c_line),
+                            Side::Right => line.new == Some(*c_line),
+                        }
+                    {
+                        rows.push(DiffRow::Composer);
+                    }
+                };
+                let mut rows = Vec::new();
                 for (index, file) in files.iter().enumerate() {
                     let collapsed = self.collapsed.contains(&file.filename);
-                    self.diff_rows.push(DiffRow::File {
+                    rows.push(DiffRow::File {
                         index,
                         name: match &file.previous_filename {
                             Some(previous) => format!("{previous} → {}", file.filename).into(),
@@ -462,15 +602,59 @@ impl Detail {
                     if collapsed {
                         continue;
                     }
-                    match &file.patch {
-                        Some(patch) => self
-                            .diff_rows
-                            .extend(diff::parse(patch).into_iter().map(DiffRow::Line)),
-                        None => self.diff_rows.push(DiffRow::Note(
+                    let Some(patch) = &file.patch else {
+                        rows.push(DiffRow::Note(
                             rust_i18n::t!("detail.file.no_diff").to_string().into(),
-                        )),
+                        ));
+                        continue;
+                    };
+                    let lines = diff::parse(patch);
+                    if self.split {
+                        for row in diff::split(&lines) {
+                            match row {
+                                diff::SplitRow::Hunk(text) => rows.push(DiffRow::Hunk(text.into())),
+                                diff::SplitRow::Pair { left, right } => {
+                                    rows.push(DiffRow::Pair {
+                                        path: file.filename.clone(),
+                                        left: left.clone(),
+                                        right: right.clone(),
+                                    });
+                                    // A context line is on both sides; its
+                                    // comments hang once.
+                                    let context = left
+                                        .as_ref()
+                                        .is_some_and(|l| l.kind == diff::Kind::Context);
+                                    if let Some(l) = &left {
+                                        after_line(&mut rows, &file.filename, l);
+                                    }
+                                    if let Some(r) = &right
+                                        && !context
+                                    {
+                                        after_line(&mut rows, &file.filename, r);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for line in lines {
+                            rows.push(DiffRow::Line {
+                                path: file.filename.clone(),
+                                line: line.clone(),
+                            });
+                            after_line(&mut rows, &file.filename, &line);
+                        }
+                    }
+                    // Comments whose line has since changed hang at the
+                    // file's end, marked outdated.
+                    for comment in comments
+                        .iter()
+                        .filter(|comment| comment.path == file.filename && comment.line.is_none())
+                    {
+                        rows.push(DiffRow::Comment(comment.clone()));
                     }
                 }
+                self.diff_rows = rows;
+                self.diff_state.reset(self.diff_rows.len());
             }
             Some(Showing::File(key)) => {
                 if let Some(text) = self
@@ -479,6 +663,19 @@ impl Detail {
                     .content(key)
                     .and_then(|fetch| fetch.value())
                     .and_then(|content| content.text.as_deref())
+                {
+                    self.lines = text
+                        .lines()
+                        .map(|line| SharedString::from(line.to_string()))
+                        .collect();
+                }
+            }
+            Some(Showing::Log { repo, job, .. }) => {
+                if let Some(text) = self
+                    .store
+                    .read(cx)
+                    .log(repo, *job)
+                    .and_then(|fetch| fetch.value())
                 {
                     self.lines = text
                         .lines()
@@ -557,9 +754,49 @@ impl Detail {
             .into_any_element()
     }
 
-    /// The two chips that switch a pull between its halves.
+    /// The two chips that switch a pull between its halves, and — on the
+    /// files — the two that switch the diff between unified and split.
     fn tabs(&self, files: u64, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
+        let mode = (self.tab == Tab::Files).then(|| {
+            let chip = |this: &Self, split: bool, label: String, cx: &mut Context<Self>| {
+                let selected = this.split == split;
+                div()
+                    .id(if split { "mode-split" } else { "mode-unified" })
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(tokens.radius.row - 2.))
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .when(selected, |this| {
+                        this.bg(tokens.colors().row_active())
+                            .text_color(tokens.colors().text_primary)
+                    })
+                    .when(!selected, |this| {
+                        this.text_color(tokens.colors().text_muted)
+                    })
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
+            };
+            h_flex()
+                .gap_0p5()
+                .p_0p5()
+                .rounded(px(tokens.radius.row))
+                .bg(tokens.colors().bg_surface)
+                .child(chip(
+                    self,
+                    false,
+                    rust_i18n::t!("diff.unified").to_string(),
+                    cx,
+                ))
+                .child(chip(
+                    self,
+                    true,
+                    rust_i18n::t!("diff.split").to_string(),
+                    cx,
+                ))
+        });
         let chip = |this: &Self, tab: Tab, label: String, cx: &mut Context<Self>| {
             let selected = this.tab == tab;
             div()
@@ -583,7 +820,7 @@ impl Detail {
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
         };
-        h_flex()
+        let tabs = h_flex()
             .gap_0p5()
             .p_0p5()
             .rounded(px(tokens.radius.row))
@@ -600,12 +837,19 @@ impl Detail {
                 format!("{} {files}", rust_i18n::t!("detail.tab.files")),
                 cx,
             ))
+            .into_any_element();
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .child(tabs)
+            .children(mode)
             .into_any_element()
     }
 
     /// One row of the diff list.
     fn diff_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
-        let tokens = Tokens::global(cx);
+        let tokens = Tokens::global(cx).clone();
         let Some(row) = self.diff_rows.get(index) else {
             return div().h(DIFF_ROW).into_any_element();
         };
@@ -680,35 +924,18 @@ impl Detail {
                     )
                     .into_any_element()
             }
-            DiffRow::Line(line) => {
-                let (fill, color, marker) = match line.kind {
-                    diff::Kind::Added => (
-                        Some(tokens.colors().status_done.opacity(0.12)),
-                        tokens.colors().text_primary,
-                        "+",
-                    ),
-                    diff::Kind::Removed => (
-                        Some(tokens.colors().status_error.opacity(0.12)),
-                        tokens.colors().text_secondary,
-                        "-",
-                    ),
-                    diff::Kind::Hunk => (
-                        Some(tokens.colors().code_bg),
-                        tokens.colors().text_muted,
-                        "",
-                    ),
-                    diff::Kind::Context => (None, tokens.colors().text_secondary, " "),
+            DiffRow::Line { path, line } => {
+                let path = path.clone();
+                let (fill, color, marker) = self.line_look(line, &tokens);
+                let side = if line.new.is_some() {
+                    Side::Right
+                } else {
+                    Side::Left
                 };
-                let number = |value: Option<u32>| {
-                    div()
-                        .w(px(40.))
-                        .flex_shrink_0()
-                        .text_right()
-                        .pr_1()
-                        .text_color(tokens.colors().text_muted)
-                        .child(value.map(|v| v.to_string()).unwrap_or_default())
-                };
+                let number = line.new.or(line.old);
+                let clickable = line.kind != diff::Kind::Hunk && number.is_some();
                 h_flex()
+                    .id(("line", index))
                     .h(DIFF_ROW)
                     .w_full()
                     .px_1()
@@ -718,12 +945,194 @@ impl Detail {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .when_some(fill, |this, fill| this.bg(fill))
-                    .child(number(line.old))
-                    .child(number(line.new))
+                    .when(clickable, |this| {
+                        this.cursor_pointer()
+                            .hover(|this| this.bg(tokens.colors().row_hover()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(number) = number {
+                                    this.start_line_comment(path.clone(), number, side, cx);
+                                }
+                            }))
+                    })
+                    .child(self.gutter(line.old, &tokens))
+                    .child(self.gutter(line.new, &tokens))
                     .child(div().w_3().flex_shrink_0().text_color(color).child(marker))
                     .child(div().text_color(color).child(line.text.clone()))
                     .into_any_element()
             }
+            DiffRow::Pair { path, left, right } => {
+                let half = |this: &Self,
+                            line: &Option<diff::Line>,
+                            side: Side,
+                            cx: &mut Context<Self>|
+                 -> AnyElement {
+                    let Some(line) = line else {
+                        return div()
+                            .flex_1()
+                            .h_full()
+                            .bg(tokens.colors().bg_surface.opacity(0.4))
+                            .into_any_element();
+                    };
+                    let (fill, color, _) = this.line_look(line, &tokens);
+                    let number = match side {
+                        Side::Left => line.old,
+                        Side::Right => line.new,
+                    };
+                    let path = path.clone();
+                    h_flex()
+                        .id((if side == Side::Left { "left" } else { "right" }, index))
+                        .flex_1()
+                        .h_full()
+                        .min_w_0()
+                        .items_center()
+                        .overflow_hidden()
+                        .when_some(fill, |this, fill| this.bg(fill))
+                        .when(number.is_some(), |this| {
+                            this.cursor_pointer()
+                                .hover(|this| this.bg(tokens.colors().row_hover()))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(number) = number {
+                                        this.start_line_comment(path.clone(), number, side, cx);
+                                    }
+                                }))
+                        })
+                        .child(this.gutter(number, &tokens))
+                        .child(
+                            div()
+                                .px_1()
+                                .text_color(color)
+                                .whitespace_nowrap()
+                                .child(line.text.clone()),
+                        )
+                        .into_any_element()
+                };
+                let left = half(self, left, Side::Left, cx);
+                let right = half(self, right, Side::Right, cx);
+                h_flex()
+                    .h(DIFF_ROW)
+                    .w_full()
+                    .font_family(mono)
+                    .text_size(px(11.5))
+                    .child(left)
+                    .child(div().w_px().h_full().bg(tokens.colors().border_subtle))
+                    .child(right)
+                    .into_any_element()
+            }
+            DiffRow::Hunk(text) => div()
+                .h(DIFF_ROW)
+                .w_full()
+                .px_3()
+                .flex()
+                .items_center()
+                .font_family(mono)
+                .text_size(px(11.5))
+                .bg(tokens.colors().code_bg)
+                .text_color(tokens.colors().text_muted)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .child(text.clone())
+                .into_any_element(),
+            DiffRow::Comment(comment) => {
+                let picture = avatar(
+                    self.store.read(cx).avatar(&comment.author.avatar_url),
+                    &comment.author.login,
+                    px(18.),
+                    cx,
+                );
+                let outdated = comment.line.is_none();
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_1p5()
+                            .p_3()
+                            .rounded(px(tokens.radius.panel))
+                            .bg(tokens.colors().bg_surface)
+                            .border_l_2()
+                            .border_color(tokens.colors().accent.opacity(0.6))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(picture)
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_medium()
+                                            .text_color(tokens.colors().text_primary)
+                                            .child(comment.author.login.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(age(Utc::now(), comment.created_at)),
+                                    )
+                                    .when(outdated, |this| {
+                                        this.child(
+                                            div()
+                                                .px_1p5()
+                                                .rounded(px(tokens.radius.control()))
+                                                .bg(tokens.colors().status_attention.opacity(0.2))
+                                                .text_size(px(10.5))
+                                                .text_color(tokens.colors().status_attention)
+                                                .child(rust_i18n::t!("diff.outdated").to_string()),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div().text_size(px(13.)).line_height(relative(1.5)).child(
+                                    TextView::markdown(
+                                        ("review-comment", comment.id as usize),
+                                        comment.body.clone(),
+                                    )
+                                    .selectable(true),
+                                ),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            DiffRow::Composer => div()
+                .w_full()
+                .px_3()
+                .py_2()
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .p_1()
+                        .rounded(px(tokens.radius.control() + 2.))
+                        .bg(tokens.colors().bg_surface)
+                        .border_1()
+                        .border_color(tokens.colors().border_strong)
+                        .child(Textarea::new(&self.review_input))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_end()
+                                .gap_1p5()
+                                .pr_1()
+                                .pb_0p5()
+                                .child(self.button(
+                                    "line-comment-cancel",
+                                    rust_i18n::t!("detail.merge.cancel").to_string(),
+                                    false,
+                                    cx,
+                                    |this, cx| this.cancel_line_comment(cx),
+                                ))
+                                .child(self.button(
+                                    "line-comment-send",
+                                    rust_i18n::t!("diff.comment.send").to_string(),
+                                    true,
+                                    cx,
+                                    |this, cx| this.send_line_comment(cx),
+                                )),
+                        ),
+                )
+                .into_any_element(),
             DiffRow::Note(text) => div()
                 .h(DIFF_ROW)
                 .px_3()
@@ -732,6 +1141,40 @@ impl Detail {
                 .child(text.clone())
                 .into_any_element(),
         }
+    }
+
+    /// How a diff line is painted: its fill, its text colour, its marker.
+    fn line_look(&self, line: &diff::Line, tokens: &Tokens) -> (Option<Hsla>, Hsla, &'static str) {
+        match line.kind {
+            diff::Kind::Added => (
+                Some(tokens.colors().status_done.opacity(0.12)),
+                tokens.colors().text_primary,
+                "+",
+            ),
+            diff::Kind::Removed => (
+                Some(tokens.colors().status_error.opacity(0.12)),
+                tokens.colors().text_secondary,
+                "-",
+            ),
+            diff::Kind::Hunk => (
+                Some(tokens.colors().code_bg),
+                tokens.colors().text_muted,
+                "",
+            ),
+            diff::Kind::Context => (None, tokens.colors().text_secondary, " "),
+        }
+    }
+
+    /// A line number in the gutter.
+    fn gutter(&self, value: Option<u32>, tokens: &Tokens) -> AnyElement {
+        div()
+            .w(px(40.))
+            .flex_shrink_0()
+            .text_right()
+            .pr_1()
+            .text_color(tokens.colors().text_muted)
+            .child(value.map(|v| v.to_string()).unwrap_or_default())
+            .into_any_element()
     }
 
     /// One line of a file.
@@ -783,12 +1226,8 @@ impl Detail {
             }
             Some(_) => {
                 let this = cx.entity();
-                uniform_list("diff", self.diff_rows.len(), move |range, _window, cx| {
-                    this.update(cx, |this, cx| {
-                        range
-                            .map(|index| this.diff_row(index, mono.clone(), cx))
-                            .collect()
-                    })
+                list(self.diff_state.clone(), move |index, _window, cx| {
+                    this.update(cx, |this, cx| this.diff_row(index, mono.clone(), cx))
                 })
                 .flex_1()
                 .size_full()
@@ -1040,7 +1479,7 @@ impl Detail {
             .id("picker")
             .w(px(360.))
             .rounded(px(tokens.radius.panel))
-            .bg(tokens.colors().bg_raised.opacity(1.0))
+            .bg(tokens.colors().popover())
             .border_1()
             .border_color(tokens.colors().border_strong)
             .shadow_lg()
@@ -1534,11 +1973,24 @@ impl Detail {
                                         .truncate()
                                         .child(run.name.clone()),
                                 )
+                                .children(run.actions.then(|| {
+                                    let (repo, job, name) =
+                                        (key.0.clone(), run.id, run.name.clone());
+                                    div()
+                                        .id(("check-log", index))
+                                        .text_size(px(11.5))
+                                        .text_color(tokens.colors().accent)
+                                        .cursor_pointer()
+                                        .child(rust_i18n::t!("checks.log").to_string())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.show_log(repo.clone(), job, name.clone(), cx)
+                                        }))
+                                }))
                                 .children(url.map(|url| {
                                     div()
                                         .id(("check-details", index))
                                         .text_size(px(11.5))
-                                        .text_color(tokens.colors().accent)
+                                        .text_color(tokens.colors().text_muted)
                                         .cursor_pointer()
                                         .child(rust_i18n::t!("checks.details").to_string())
                                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
@@ -1591,10 +2043,9 @@ impl Detail {
         } else {
             muted
         };
+        let corner = px(tokens.radius.control() + 2.);
         let merge_button = h_flex()
             .h(px(30.))
-            .rounded(px(tokens.radius.control()))
-            .overflow_hidden()
             .child(
                 div()
                     .id("merge")
@@ -1602,6 +2053,7 @@ impl Detail {
                     .flex()
                     .items_center()
                     .px_3()
+                    .rounded_l(corner)
                     .bg(button_color)
                     .text_size(px(12.))
                     .font_medium()
@@ -1620,6 +2072,7 @@ impl Detail {
                     .flex()
                     .items_center()
                     .px_2()
+                    .rounded_r(corner)
                     .bg(button_color)
                     .border_l_1()
                     .border_color(gpui::white().opacity(0.25))
@@ -1637,6 +2090,42 @@ impl Detail {
                             .text_color(gpui::white()),
                     ),
             );
+        // A draft's button is the way out of being one; a ready pull can
+        // go back, in the small print, the way GitHub offers it.
+        let ready = draft.then(|| {
+            div()
+                .id("ready")
+                .h(px(30.))
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded(corner)
+                .bg(tokens.colors().merge_button())
+                .text_size(px(12.))
+                .font_medium()
+                .text_color(gpui::white())
+                .cursor_pointer()
+                .hover(|this| this.opacity(0.9))
+                .child(rust_i18n::t!("pull.ready").to_string())
+                .on_click(cx.listener(|this, _, _, cx| this.set_draft(false, cx)))
+                .into_any_element()
+        });
+        let to_draft = (!draft && !busy).then(|| {
+            h_flex()
+                .gap_1()
+                .text_size(px(11.5))
+                .text_color(muted)
+                .child(rust_i18n::t!("pull.still").to_string())
+                .child(
+                    div()
+                        .id("to-draft")
+                        .text_color(tokens.colors().accent)
+                        .cursor_pointer()
+                        .child(rust_i18n::t!("pull.to_draft").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| this.set_draft(true, cx))),
+                )
+                .into_any_element()
+        });
         let cancel = self.confirm_merge.then(|| {
             self.button(
                 "merge-cancel",
@@ -1654,7 +2143,7 @@ impl Detail {
                 .id("merge-menu-card")
                 .w(px(400.))
                 .rounded(px(tokens.radius.panel))
-                .bg(tokens.colors().bg_raised.opacity(1.0))
+                .bg(tokens.colors().popover())
                 .border_1()
                 .border_color(tokens.colors().border_strong)
                 .shadow_lg()
@@ -1735,16 +2224,10 @@ impl Detail {
                                 .relative()
                                 .gap_2()
                                 .items_center()
-                                .child(merge_button)
+                                .when(!draft, |this| this.child(merge_button))
+                                .children(ready)
                                 .children(cancel)
-                                .when(draft, |this| {
-                                    this.child(
-                                        div()
-                                            .text_size(px(11.5))
-                                            .text_color(muted)
-                                            .child(rust_i18n::t!("state.draft").to_string()),
-                                    )
-                                }),
+                                .children(to_draft),
                         )
                         .children(menu),
                 )
@@ -2100,6 +2583,68 @@ impl Detail {
     }
 }
 
+impl Detail {
+    /// An Actions job's log: the job's name, then its lines.
+    fn log(&self, repo: RepoId, job: u64, name: String, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let mono = gpui_component::Theme::global(cx).mono_font_family.clone();
+        let fetch = self.store.read(cx).log(&repo, job).cloned();
+        let (text, error) = match &fetch {
+            Some(fetch) => (fetch.value().cloned(), fetch.error().map(str::to_string)),
+            None => (None, None),
+        };
+        let head = v_flex()
+            .w_full()
+            .px_5()
+            .pt_4()
+            .pb_3()
+            .gap_1()
+            .border_b_1()
+            .border_color(tokens.colors().border_subtle)
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_medium()
+                    .text_color(tokens.colors().text_primary)
+                    .child(name),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(repo.to_string())
+                    .child(rust_i18n::t!("log.title", id = job).to_string())
+                    .when(!self.lines.is_empty(), |this| {
+                        this.child(rust_i18n::t!("log.lines", count = self.lines.len()).to_string())
+                    }),
+            );
+        let body: AnyElement = match (text, error) {
+            (Some(_), _) => {
+                let this = cx.entity();
+                uniform_list("log", self.lines.len(), move |range, _window, cx| {
+                    this.update(cx, |this, cx| {
+                        range
+                            .map(|index| this.code_row(index, mono.clone(), cx))
+                            .collect()
+                    })
+                })
+                .flex_1()
+                .size_full()
+                .py_1()
+                .into_any_element()
+            }
+            (None, Some(error)) => self.notice(error, true, cx),
+            (None, None) => crate::skeleton::diff(cx),
+        };
+        v_flex()
+            .size_full()
+            .child(head)
+            .child(body)
+            .into_any_element()
+    }
+}
+
 impl Render for Detail {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.clear_composer {
@@ -2112,10 +2657,16 @@ impl Render for Detail {
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
         }
+        if self.clear_review {
+            self.clear_review = false;
+            self.review_input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
         let body = match self.showing.clone() {
             None => self.notice(rust_i18n::t!("detail.empty").to_string(), false, cx),
             Some(Showing::Item(key)) => self.item(key, cx),
             Some(Showing::File(key)) => self.file(key, cx),
+            Some(Showing::Log { repo, job, name }) => self.log(repo, job, name, cx),
         };
         v_flex().size_full().child(body)
     }
