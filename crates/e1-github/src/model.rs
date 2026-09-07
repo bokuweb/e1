@@ -529,6 +529,9 @@ pub struct ReviewComment {
     /// The line in the current diff, or `None` when the code it was on has
     /// since changed — "outdated", as GitHub says.
     pub line: Option<u32>,
+    /// The first line, when the comment is on a range that ends at `line`.
+    #[serde(default)]
+    pub start_line: Option<u32>,
     /// Which side of the diff.
     pub side: Side,
     /// Who wrote it.

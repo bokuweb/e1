@@ -42,6 +42,9 @@ fn spinner(size: Pixels, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// How often what is still running on screen is asked about again.
+const POLL_SECONDS: u64 = 20;
+
 /// The reading measure, in pixels. Long-form text stays readable because the
 /// column stops growing, not because the window does.
 const MEASURE: f32 = 720.;
@@ -169,6 +172,9 @@ pub struct Detail {
     split: bool,
     /// The line a comment is being written on, if one is.
     composing: Option<(String, u32, Side)>,
+    /// The first line of the range the comment is on, when a second line
+    /// was picked with ⇧ held; the range ends at the composing line.
+    compose_start: Option<u32>,
     /// The comment being written on a line.
     review_input: Entity<TextareaState>,
     /// Empty the line composer at the next frame.
@@ -200,6 +206,19 @@ impl Detail {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&store, |this, _, _: &StoreEvent, cx| this.rebuild(cx))
             .detach();
+        // A check that is running finishes without telling us, so what is
+        // on screen and still pending is asked about again every so often.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(POLL_SECONDS))
+                    .await;
+                if this.update(cx, |this, cx| this.poll(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder(rust_i18n::t!("detail.comment.placeholder").to_string())
@@ -246,6 +265,7 @@ impl Detail {
             diff_state: ListState::new(0, ListAlignment::Top, px(300.)),
             split: false,
             composing: None,
+            compose_start: None,
             review_input,
             clear_review: false,
             log_lines: Vec::new(),
@@ -330,16 +350,105 @@ impl Detail {
         self.rebuild(cx);
     }
 
-    /// Open a comment box under a line of the diff.
-    fn start_line_comment(&mut self, path: String, line: u32, side: Side, cx: &mut Context<Self>) {
-        self.composing = Some((path, line, side));
-        self.clear_review = true;
+    /// Open a comment box under a line of the diff. With ⇧ held while a
+    /// box is open on the same file and side, the comment covers the lines
+    /// between the two instead, the way it does on GitHub.
+    fn start_line_comment(
+        &mut self,
+        path: String,
+        line: u32,
+        side: Side,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.composing {
+            Some((open_path, open_line, open_side))
+                if extend && *open_path == path && *open_side == side =>
+            {
+                let anchor = self.compose_start.unwrap_or(*open_line);
+                let (start, end) = if line < anchor {
+                    (line, anchor)
+                } else {
+                    (anchor, line)
+                };
+                self.compose_start = Some(start).filter(|start| *start < end);
+                self.composing = Some((path, end, side));
+            }
+            _ => {
+                self.composing = Some((path, line, side));
+                self.compose_start = None;
+                self.clear_review = true;
+            }
+        }
         self.rebuild(cx);
     }
 
     fn cancel_line_comment(&mut self, cx: &mut Context<Self>) {
         self.composing = None;
+        self.compose_start = None;
         self.rebuild(cx);
+    }
+
+    /// Whether a line of the diff is inside the range being commented on.
+    fn in_compose_range(&self, path: &str, line: &diff::Line) -> bool {
+        let Some((open_path, end, side)) = &self.composing else {
+            return false;
+        };
+        if open_path != path {
+            return false;
+        }
+        let number = match side {
+            Side::Left => line.old,
+            Side::Right => line.new,
+        };
+        let start = self.compose_start.unwrap_or(*end);
+        number.is_some_and(|number| (start..=*end).contains(&number))
+    }
+
+    /// Ask again about whatever on screen is still running, so a spinner
+    /// stops when the work does. Called on a timer.
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        match self.showing.clone() {
+            Some(Showing::Item(key)) => {
+                let Some(sha) = self.head_sha(cx) else {
+                    return;
+                };
+                let store = self.store.read(cx);
+                let running = store.checks(&key.0, &sha).is_some_and(|fetch| {
+                    !fetch.is_loading()
+                        && fetch.value().is_some_and(|checks| {
+                            checks
+                                .runs
+                                .iter()
+                                .any(|run| run.state == CheckState::Pending)
+                        })
+                });
+                if running {
+                    self.store
+                        .update(cx, |store, cx| store.load_checks(key.0, sha, cx));
+                }
+            }
+            Some(Showing::Log { repo, job, .. }) => {
+                let store = self.store.read(cx);
+                let running = store.job(&repo, job).is_some_and(|fetch| {
+                    !fetch.is_loading()
+                        && fetch.value().is_none_or(|job| {
+                            job.state == CheckState::Pending
+                                || job
+                                    .steps
+                                    .iter()
+                                    .any(|step| step.state == CheckState::Pending)
+                        })
+                });
+                if running {
+                    self.store.update(cx, |store, cx| {
+                        store.load_job(repo.clone(), job, cx);
+                        store.load_log(repo, job, cx);
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Post the line comment at the pull's head.
@@ -355,10 +464,11 @@ impl Detail {
         let Some(commit) = self.head_sha(cx) else {
             return;
         };
+        let start = self.compose_start.take();
         self.composing = None;
         self.clear_review = true;
         self.store.update(cx, |store, cx| {
-            store.review_comment(key, commit, path, line, side, body, cx)
+            store.review_comment(key, commit, path, start, line, side, body, cx)
         });
         self.rebuild(cx);
     }
@@ -1062,30 +1172,41 @@ impl Detail {
                 };
                 let number = line.new.or(line.old);
                 let clickable = line.kind != diff::Kind::Hunk && number.is_some();
+                let in_range = self.in_compose_range(&path, line);
+                // The row grows with its line: a long line wraps rather
+                // than running off the column.
                 h_flex()
                     .id(("line", index))
-                    .h(DIFF_ROW)
+                    .min_h(DIFF_ROW)
                     .w_full()
                     .px_1()
-                    .items_center()
+                    .items_start()
                     .font_family(mono)
                     .text_size(px(11.5))
-                    .whitespace_nowrap()
-                    .overflow_hidden()
                     .when_some(fill, |this, fill| this.bg(fill))
+                    .when(in_range, |this| {
+                        this.bg(tokens.colors().accent.opacity(0.18))
+                    })
                     .when(clickable, |this| {
                         this.cursor_pointer()
                             .hover(|this| this.bg(tokens.colors().row_hover()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                                 if let Some(number) = number {
-                                    this.start_line_comment(path.clone(), number, side, cx);
+                                    let extend = event.modifiers().shift;
+                                    this.start_line_comment(path.clone(), number, side, extend, cx);
                                 }
                             }))
                     })
                     .child(self.gutter(line.old, &tokens))
                     .child(self.gutter(line.new, &tokens))
                     .child(div().w_3().flex_shrink_0().text_color(color).child(marker))
-                    .child(div().text_color(color).child(line.text.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(color)
+                            .child(line.text.clone()),
+                    )
                     .into_any_element()
             }
             DiffRow::Pair { path, left, right } => {
@@ -1097,7 +1218,7 @@ impl Detail {
                     let Some(line) = line else {
                         return div()
                             .flex_1()
-                            .h_full()
+                            .min_w_0()
                             .bg(tokens.colors().bg_surface.opacity(0.4))
                             .into_any_element();
                     };
@@ -1106,30 +1227,43 @@ impl Detail {
                         Side::Left => line.old,
                         Side::Right => line.new,
                     };
+                    let in_range = matches!(&this.composing, Some((_, _, open)) if *open == side)
+                        && this.in_compose_range(path, line);
                     let path = path.clone();
+                    // Each half wraps its own line; the row is as tall as
+                    // the taller half.
                     h_flex()
                         .id((if side == Side::Left { "left" } else { "right" }, index))
                         .flex_1()
-                        .h_full()
                         .min_w_0()
-                        .items_center()
-                        .overflow_hidden()
+                        .items_start()
                         .when_some(fill, |this, fill| this.bg(fill))
+                        .when(in_range, |this| {
+                            this.bg(tokens.colors().accent.opacity(0.18))
+                        })
                         .when(number.is_some(), |this| {
                             this.cursor_pointer()
                                 .hover(|this| this.bg(tokens.colors().row_hover()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                                     if let Some(number) = number {
-                                        this.start_line_comment(path.clone(), number, side, cx);
+                                        let extend = event.modifiers().shift;
+                                        this.start_line_comment(
+                                            path.clone(),
+                                            number,
+                                            side,
+                                            extend,
+                                            cx,
+                                        );
                                     }
                                 }))
                         })
                         .child(this.gutter(number, &tokens))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .px_1()
                                 .text_color(color)
-                                .whitespace_nowrap()
                                 .child(line.text.clone()),
                         )
                         .into_any_element()
@@ -1137,12 +1271,18 @@ impl Detail {
                 let left = half(self, left, Side::Left, cx);
                 let right = half(self, right, Side::Right, cx);
                 h_flex()
-                    .h(DIFF_ROW)
+                    .min_h(DIFF_ROW)
                     .w_full()
+                    .items_stretch()
                     .font_family(mono)
                     .text_size(px(11.5))
                     .child(left)
-                    .child(div().w_px().h_full().bg(tokens.colors().border_subtle))
+                    .child(
+                        div()
+                            .w_px()
+                            .flex_shrink_0()
+                            .bg(tokens.colors().border_subtle),
+                    )
                     .child(right)
                     .into_any_element()
             }
@@ -1168,6 +1308,12 @@ impl Detail {
                     cx,
                 );
                 let outdated = comment.line.is_none();
+                let range = match (comment.start_line, comment.line) {
+                    (Some(start), Some(end)) => Some(
+                        rust_i18n::t!("diff.comment.range", start = start, end = end).to_string(),
+                    ),
+                    _ => None,
+                };
                 div()
                     .w_full()
                     .px_3()
@@ -1199,6 +1345,12 @@ impl Detail {
                                             .text_color(tokens.colors().text_muted)
                                             .child(age(Utc::now(), comment.created_at)),
                                     )
+                                    .children(range.map(|range| {
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(range)
+                                    }))
                                     .when(outdated, |this| {
                                         this.child(
                                             div()
@@ -1236,6 +1388,25 @@ impl Detail {
                         .bg(tokens.colors().bg_surface)
                         .border_1()
                         .border_color(tokens.colors().border_strong)
+                        .child(
+                            div()
+                                .px_1()
+                                .pt_0p5()
+                                .text_size(px(11.))
+                                .text_color(tokens.colors().text_muted)
+                                .child(match (self.compose_start, &self.composing) {
+                                    (Some(start), Some((_, end, _))) => rust_i18n::t!(
+                                        "diff.comment.range",
+                                        start = start,
+                                        end = end
+                                    )
+                                    .to_string(),
+                                    (_, Some((_, line, _))) => {
+                                        rust_i18n::t!("diff.comment.line", line = line).to_string()
+                                    }
+                                    _ => String::new(),
+                                }),
+                        )
                         .child(Textarea::new(&self.review_input))
                         .child(
                             h_flex()

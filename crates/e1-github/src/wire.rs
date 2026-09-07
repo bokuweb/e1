@@ -404,6 +404,8 @@ pub(crate) struct WireReviewComment {
     #[serde(default)]
     pub line: Option<u32>,
     #[serde(default)]
+    pub start_line: Option<u32>,
+    #[serde(default)]
     pub side: Option<String>,
     pub user: WireUser,
     pub created_at: DateTime<Utc>,
@@ -419,6 +421,7 @@ impl From<WireReviewComment> for ReviewComment {
             id: comment.id,
             path: comment.path,
             line: comment.line,
+            start_line: comment.start_line,
             side: Side::parse(comment.side.as_deref().unwrap_or("RIGHT")),
             author: comment.user.into(),
             created_at: comment.created_at,

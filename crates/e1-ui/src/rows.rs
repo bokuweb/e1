@@ -7,7 +7,7 @@
 use crate::theme::{Colors, parse_hex};
 use crate::time::age;
 use chrono::{DateTime, Utc};
-use e1_github::{Item, Notification, RepoId, State, SubjectKind};
+use e1_github::{CheckState, Item, Notification, RepoId, State, SubjectKind};
 use gpui::{Hsla, SharedString};
 
 /// The mark a row leads with, which is its state.
@@ -167,6 +167,8 @@ pub struct ItemRow {
     pub html_url: Option<String>,
     /// The author's picture, when the row has an author.
     pub avatar_url: Option<String>,
+    /// How the checks stand on a pull, once the store knows.
+    pub check: Option<CheckState>,
 }
 
 /// How many labels a row shows. Three is what fits beside the meta line at
@@ -193,7 +195,14 @@ impl ItemRow {
             unread: false,
             html_url: Some(item.html_url.clone()),
             avatar_url: Some(item.author.avatar_url.clone()),
+            check: None,
         }
+    }
+
+    /// The same row, with the checks on it.
+    pub fn with_check(mut self, check: Option<CheckState>) -> Self {
+        self.check = check;
+        self
     }
 
     /// A row for an inbox entry: the reason where the author would be.
@@ -228,6 +237,7 @@ impl ItemRow {
             unread: notification.unread,
             html_url: notification.html_url(),
             avatar_url: None,
+            check: None,
         }
     }
 }

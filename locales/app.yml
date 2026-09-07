@@ -437,3 +437,9 @@ log.back:
 log.no_steps:
   en: This job reported no steps; the log is shown whole.
   ja: このジョブにはステップ情報がないため、ログをそのまま表示します。
+diff.comment.line:
+  en: Line %{line}
+  ja: "%{line} 行目"
+diff.comment.range:
+  en: Lines %{start}–%{end}
+  ja: "%{start}–%{end} 行目"
