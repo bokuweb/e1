@@ -80,6 +80,8 @@ pub(crate) struct WireLabel {
     pub name: String,
     #[serde(default)]
     pub color: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl From<WireLabel> for Label {
@@ -87,6 +89,7 @@ impl From<WireLabel> for Label {
         Self {
             name: label.name,
             color: label.color,
+            description: label.description.filter(|text| !text.is_empty()),
         }
     }
 }
@@ -104,6 +107,8 @@ pub(crate) struct WirePullMarker {
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireIssue {
     pub number: u64,
+    #[serde(default)]
+    pub node_id: String,
     pub title: String,
     pub state: String,
     pub user: WireUser,
@@ -155,6 +160,7 @@ impl WireIssue {
         Some(Item {
             repo,
             number: self.number,
+            node_id: self.node_id,
             title: self.title,
             kind,
             status: parse_status(&self.state),
@@ -175,12 +181,16 @@ impl WireIssue {
 pub(crate) struct WireRef {
     #[serde(rename = "ref")]
     pub name: String,
+    #[serde(default)]
+    pub sha: String,
 }
 
 /// What `/pulls` and `/pulls/{n}` send. The listing omits the counts.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WirePull {
     pub number: u64,
+    #[serde(default)]
+    pub node_id: String,
     pub title: String,
     pub state: String,
     #[serde(default)]
@@ -220,6 +230,7 @@ impl WirePull {
         Item {
             repo: repo.clone(),
             number: self.number,
+            node_id: self.node_id,
             title: self.title,
             kind: Kind::Pull {
                 draft: self.draft,
@@ -251,6 +262,7 @@ impl WirePull {
         let deletions = self.deletions.unwrap_or(0);
         let changed_files = self.changed_files.unwrap_or(0);
         let mergeable = self.mergeable;
+        let head_sha = self.head.sha.clone();
         Pull {
             item: self.into_item(repo),
             head,
@@ -259,6 +271,76 @@ impl WirePull {
             deletions,
             changed_files,
             mergeable,
+            head_sha,
+        }
+    }
+}
+
+/// What `/commits/{sha}/check-runs` sends.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCheckRuns {
+    #[serde(default)]
+    pub check_runs: Vec<WireCheckRun>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCheckRun {
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub html_url: Option<String>,
+}
+
+impl From<WireCheckRun> for CheckRun {
+    fn from(run: WireCheckRun) -> Self {
+        let state = if run.status != "completed" {
+            CheckState::Pending
+        } else {
+            match run.conclusion.as_deref() {
+                Some("success") => CheckState::Success,
+                Some("neutral") | Some("skipped") => CheckState::Neutral,
+                _ => CheckState::Failure,
+            }
+        };
+        Self {
+            name: run.name,
+            state,
+            html_url: run.html_url,
+        }
+    }
+}
+
+/// What `/commits/{sha}/status` sends: the older kind of check.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCombinedStatus {
+    #[serde(default)]
+    pub statuses: Vec<WireStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireStatus {
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub target_url: Option<String>,
+}
+
+impl From<WireStatus> for CheckRun {
+    fn from(status: WireStatus) -> Self {
+        let state = match status.state.as_str() {
+            "success" => CheckState::Success,
+            "pending" => CheckState::Pending,
+            _ => CheckState::Failure,
+        };
+        Self {
+            name: status.context,
+            state,
+            html_url: status.target_url,
         }
     }
 }

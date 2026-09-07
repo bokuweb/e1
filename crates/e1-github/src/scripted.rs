@@ -34,6 +34,7 @@ struct Data {
     files: HashMap<(RepoId, u64), Vec<PullFile>>,
     trees: HashMap<RepoId, Tree>,
     contents: HashMap<(RepoId, String), String>,
+    memberships: Vec<((RepoId, u64), ProjectMembership)>,
     /// When set, every call fails with this. For testing the error states.
     failing: Option<String>,
 }
@@ -196,6 +197,7 @@ impl Scripted {
                     labels: &[(&str, &str)]| Item {
             repo: repo.clone(),
             number,
+            node_id: format!("node-{repo}-{number}"),
             title: title.to_string(),
             kind,
             status,
@@ -208,6 +210,7 @@ impl Scripted {
                 .map(|(name, color)| Label {
                     name: name.to_string(),
                     color: color.to_string(),
+                    description: None,
                 })
                 .collect(),
             assignees: Vec::new(),
@@ -244,6 +247,7 @@ impl Scripted {
             deletions: dels,
             changed_files: files,
             mergeable: Some(true),
+            head_sha: format!("sha-{head}"),
         };
         let comment = |id: u64, author: &str, hours: i64, body: &str| Comment {
             id,
@@ -513,6 +517,7 @@ impl GitHub for Scripted {
         match (item, extra) {
             (Some(item), Some(extra)) => Ok(Pull {
                 item,
+                head_sha: format!("sha-{}", extra.head),
                 head: extra.head,
                 base: extra.base,
                 additions: extra.additions,
@@ -528,6 +533,7 @@ impl GitHub for Scripted {
                 deletions: 0,
                 changed_files: 0,
                 mergeable: None,
+                head_sha: String::new(),
             }),
             _ => Err(Error::Status {
                 status: 404,
@@ -597,7 +603,7 @@ impl GitHub for Scripted {
         Ok(item.clone())
     }
 
-    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
+    fn merge(&self, repo: &RepoId, number: u64, _method: MergeMethod) -> Result<()> {
         let mut data = self.guard()?;
         let item = data
             .items
@@ -621,6 +627,193 @@ impl GitHub for Scripted {
         };
         item.status = Status::Closed;
         item.updated_at = Utc::now();
+        Ok(())
+    }
+
+    fn checks(&self, _repo: &RepoId, sha: &str) -> Result<Checks> {
+        let _guard = self.guard()?;
+        // A head that says so fails; everything else passes, with one run
+        // still going on a draft so the pending state has a face.
+        let run = |name: &str, state: CheckState| CheckRun {
+            name: name.to_string(),
+            state,
+            html_url: Some("https://github.com/bokuweb/e1/actions".into()),
+        };
+        Ok(Checks {
+            runs: if sha.contains("fail") {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Failure),
+                ]
+            } else if sha.contains("persist") {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Pending),
+                ]
+            } else {
+                vec![
+                    run("build", CheckState::Success),
+                    run("test", CheckState::Success),
+                ]
+            },
+        })
+    }
+
+    fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
+        // A review is a comment with a verdict on the front; the fake keeps
+        // the verdict as words, which is what the timeline would show.
+        let text = format!("[{}] {body}", event.as_api());
+        self.comment_on(repo, number, &text).map(|_| ())
+    }
+
+    fn labels(&self, _repo: &RepoId) -> Result<Vec<Label>> {
+        let _guard = self.guard()?;
+        Ok([
+            ("bug", "d73a4a", "Something isn't working"),
+            ("enhancement", "a2eeef", "New feature or request"),
+            ("design", "c5def5", "How it looks and reads"),
+            ("wip", "fbca04", "Not ready for review"),
+            ("macos", "0e8a16", "Only on macOS"),
+        ]
+        .iter()
+        .map(|(name, color, description)| Label {
+            name: name.to_string(),
+            color: color.to_string(),
+            description: Some(description.to_string()),
+        })
+        .collect())
+    }
+
+    fn add_labels(&self, repo: &RepoId, number: u64, labels: &[String]) -> Result<Item> {
+        let offered = self.labels(repo)?;
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+            .ok_or(Error::Unsupported("label a missing item"))?;
+        for name in labels {
+            if !item.labels.iter().any(|label| &label.name == name) {
+                let color = offered
+                    .iter()
+                    .find(|label| &label.name == name)
+                    .map(|label| label.color.clone())
+                    .unwrap_or_else(|| "888888".into());
+                let description = offered
+                    .iter()
+                    .find(|label| &label.name == name)
+                    .and_then(|label| label.description.clone());
+                item.labels.push(Label {
+                    name: name.clone(),
+                    color,
+                    description,
+                });
+            }
+        }
+        Ok(item.clone())
+    }
+
+    fn remove_label(&self, repo: &RepoId, number: u64, label: &str) -> Result<Item> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+            .ok_or(Error::Unsupported("unlabel a missing item"))?;
+        item.labels.retain(|existing| existing.name != label);
+        Ok(item.clone())
+    }
+
+    fn assignees(&self, _repo: &RepoId) -> Result<Vec<User>> {
+        let _guard = self.guard()?;
+        Ok(["bokuweb", "alice", "carol", "dave"]
+            .iter()
+            .map(|login| user(login))
+            .collect())
+    }
+
+    fn add_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+            .ok_or(Error::Unsupported("assign a missing item"))?;
+        for login in logins {
+            if !item.assignees.iter().any(|user| &user.login == login) {
+                item.assignees.push(user(login));
+            }
+        }
+        Ok(item.clone())
+    }
+
+    fn remove_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let mut data = self.guard()?;
+        let item = data
+            .items
+            .iter_mut()
+            .find(|item| &item.repo == repo && item.number == number)
+            .ok_or(Error::Unsupported("unassign a missing item"))?;
+        item.assignees.retain(|user| !logins.contains(&user.login));
+        Ok(item.clone())
+    }
+
+    fn projects(&self, owner: &str) -> Result<Vec<Project>> {
+        let _guard = self.guard()?;
+        Ok(vec![
+            Project {
+                id: format!("PVT_{owner}_1"),
+                title: "Roadmap".into(),
+                number: 1,
+                closed: false,
+            },
+            Project {
+                id: format!("PVT_{owner}_2"),
+                title: "Bugs".into(),
+                number: 2,
+                closed: false,
+            },
+        ])
+    }
+
+    fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
+        let data = self.guard()?;
+        Ok(data
+            .memberships
+            .iter()
+            .filter(|(key, _)| key == &(repo.clone(), number))
+            .map(|(_, membership)| membership.clone())
+            .collect())
+    }
+
+    fn add_to_project(&self, project_id: &str, node_id: &str) -> Result<()> {
+        let mut data = self.guard()?;
+        let key = data
+            .items
+            .iter()
+            .find(|item| item.node_id == node_id)
+            .map(|item| (item.repo.clone(), item.number))
+            .ok_or(Error::Unsupported("add a missing item to a project"))?;
+        let title = if project_id.ends_with("_1") {
+            "Roadmap"
+        } else {
+            "Bugs"
+        };
+        data.memberships.push((
+            key,
+            ProjectMembership {
+                project_id: project_id.to_string(),
+                title: title.to_string(),
+                item_id: format!("PVTI_{project_id}_{node_id}"),
+            },
+        ));
+        Ok(())
+    }
+
+    fn remove_from_project(&self, _project_id: &str, item_id: &str) -> Result<()> {
+        let mut data = self.guard()?;
+        data.memberships
+            .retain(|(_, membership)| membership.item_id != item_id);
         Ok(())
     }
 
@@ -741,13 +934,46 @@ mod tests {
         assert_eq!(github.set_open(&e1, 2, true).unwrap().state(), State::Open);
 
         // A draft cannot be merged; a ready pull can, and is then merged.
-        assert!(github.merge(&e1, 6).is_err());
-        github.merge(&e1, 7).unwrap();
+        assert!(github.merge(&e1, 6, MergeMethod::Squash).is_err());
+        github.merge(&e1, 7, MergeMethod::Squash).unwrap();
         assert_eq!(github.item(&e1, 7).unwrap().state(), State::Merged);
         assert!(matches!(
             Scripted::empty().avatar("x"),
             Err(Error::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn labels_assignees_reviews_and_projects_round_trip() {
+        let github = Scripted::sample();
+        let e1 = RepoId::new("bokuweb", "e1");
+        assert!(github.labels(&e1).unwrap().iter().any(|l| l.name == "bug"));
+        let item = github
+            .add_labels(&e1, 2, &["bug".into(), "wip".into()])
+            .unwrap();
+        assert_eq!(item.labels.len(), 3, "design was there already");
+        let item = github.remove_label(&e1, 2, "design").unwrap();
+        assert!(item.labels.iter().all(|l| l.name != "design"));
+
+        let item = github.add_assignees(&e1, 2, &["alice".into()]).unwrap();
+        assert_eq!(item.assignees.len(), 1);
+        let item = github.remove_assignees(&e1, 2, &["alice".into()]).unwrap();
+        assert!(item.assignees.is_empty());
+
+        github.review(&e1, 7, ReviewEvent::Approve, "LGTM").unwrap();
+        let last = github.comments(&e1, 7).unwrap().pop().unwrap();
+        assert!(last.body.starts_with("[APPROVE]"));
+
+        let projects = github.projects("bokuweb").unwrap();
+        assert_eq!(projects.len(), 2);
+        let node = github.item(&e1, 2).unwrap().node_id;
+        github.add_to_project(&projects[0].id, &node).unwrap();
+        let memberships = github.item_projects(&e1, 2).unwrap();
+        assert_eq!(memberships.len(), 1);
+        github
+            .remove_from_project(&projects[0].id, &memberships[0].item_id)
+            .unwrap();
+        assert!(github.item_projects(&e1, 2).unwrap().is_empty());
     }
 
     #[test]

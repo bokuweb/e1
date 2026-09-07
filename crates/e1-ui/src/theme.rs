@@ -377,6 +377,17 @@ impl Colors {
         self.accent.opacity(0.22)
     }
 
+    /// The merge button: the done colour deepened until white reads on it.
+    /// The status green is made for a glyph on the glass, not for a fill
+    /// under text, and white on it was the least legible thing on the page.
+    pub fn merge_button(&self) -> Hsla {
+        let mut color = self.status_done;
+        color.l = 0.32;
+        color.s = color.s.max(0.45);
+        color.a = 1.0;
+        color
+    }
+
     /// A table's head: black at a third over the glass, so it reads as a
     /// band and still lets the blur through.
     pub fn table_head(&self) -> Hsla {
@@ -435,6 +446,15 @@ mod tests {
             Mode::resolve(Appearance::Light, WindowAppearance::Dark),
             Mode::Light
         );
+    }
+
+    #[test]
+    fn the_merge_button_is_dark_enough_for_white_text() {
+        for mode in [Mode::Dark, Mode::Light] {
+            let fill = Tokens::load(mode).colors.merge_button();
+            assert!(fill.l < 0.4, "white has to read on it");
+            assert!(fill.a > 0.99, "a button is not glass");
+        }
     }
 
     #[test]

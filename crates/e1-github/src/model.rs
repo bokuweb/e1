@@ -110,6 +110,9 @@ pub struct Label {
     pub name: String,
     /// Six hex digits without a `#`, as GitHub sends it.
     pub color: String,
+    /// What the label is for, when the repository said.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// What kind of thing a notification is about.
@@ -231,6 +234,9 @@ pub struct Item {
     pub repo: RepoId,
     /// The number, unique within the repository across pulls and issues.
     pub number: u64,
+    /// GitHub's global id, which is what GraphQL — and so Projects — takes.
+    #[serde(default)]
+    pub node_id: String,
     /// The title.
     pub title: String,
     /// Pull or issue.
@@ -292,6 +298,144 @@ pub struct Pull {
     /// Whether GitHub thinks it can be merged. `None` while GitHub is still
     /// computing it, which is the usual answer right after a push.
     pub mergeable: Option<bool>,
+    /// The commit at the head, which is what checks are keyed by.
+    #[serde(default)]
+    pub head_sha: String,
+}
+
+/// What one check or status came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckState {
+    /// Passed.
+    Success,
+    /// Failed, errored, timed out, or wants action.
+    Failure,
+    /// Queued or running.
+    Pending,
+    /// Neither passed nor failed: skipped, or neutral.
+    Neutral,
+}
+
+/// One check run, or one commit status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckRun {
+    /// The check's name, or the status's context.
+    pub name: String,
+    /// What it came to.
+    pub state: CheckState,
+    /// Where its details are, when it said.
+    pub html_url: Option<String>,
+}
+
+/// Every check and status on a commit, together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Checks {
+    /// The runs, in GitHub's order.
+    pub runs: Vec<CheckRun>,
+}
+
+impl Checks {
+    /// How many are in each state: `(passed, failed, pending)`. Neutral runs
+    /// count as passed, the way GitHub's own summary counts them.
+    pub fn tally(&self) -> (usize, usize, usize) {
+        let mut tally = (0, 0, 0);
+        for run in &self.runs {
+            match run.state {
+                CheckState::Success | CheckState::Neutral => tally.0 += 1,
+                CheckState::Failure => tally.1 += 1,
+                CheckState::Pending => tally.2 += 1,
+            }
+        }
+        tally
+    }
+
+    /// The one state the whole set is in: a failure outranks a pending run,
+    /// which outranks success, and no runs at all is neutral.
+    pub fn overall(&self) -> CheckState {
+        let (_, failed, pending) = self.tally();
+        if self.runs.is_empty() {
+            CheckState::Neutral
+        } else if failed > 0 {
+            CheckState::Failure
+        } else if pending > 0 {
+            CheckState::Pending
+        } else {
+            CheckState::Success
+        }
+    }
+}
+
+/// What a review says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewEvent {
+    /// Approve.
+    Approve,
+    /// Ask for changes.
+    RequestChanges,
+    /// Neither: a review that is only its comment.
+    Comment,
+}
+
+impl ReviewEvent {
+    /// The value GitHub's `event` field takes.
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+            Self::Comment => "COMMENT",
+        }
+    }
+}
+
+/// How a pull is merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MergeMethod {
+    /// A merge commit.
+    #[default]
+    Merge,
+    /// One squashed commit.
+    Squash,
+    /// Rebased onto the base.
+    Rebase,
+}
+
+impl MergeMethod {
+    /// All three, in the order the chips show them.
+    pub const ALL: &'static [MergeMethod] =
+        &[MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
+
+    /// The value GitHub's `merge_method` field takes.
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+}
+
+/// A GitHub Project (the current kind, "Projects v2").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    /// The project's global id, which adding an item takes.
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Its number within the owner.
+    pub number: u64,
+    /// Whether it is closed.
+    pub closed: bool,
+}
+
+/// An item's place in a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectMembership {
+    /// The project.
+    pub project_id: String,
+    /// The project's title.
+    pub title: String,
+    /// The item's id *within* the project, which removing it takes.
+    pub item_id: String,
 }
 
 /// One entry of an item's timeline.
@@ -317,6 +461,7 @@ mod tests {
         Item {
             repo: RepoId::new("o", "r"),
             number: 1,
+            node_id: String::new(),
             title: String::new(),
             kind,
             status,

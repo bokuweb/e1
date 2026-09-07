@@ -160,9 +160,70 @@ pub trait GitHub: Send + Sync {
         let _ = (repo, number, open);
         Err(Error::Unsupported("close or reopen"))
     }
-    /// Merge a pull. GitHub refuses one that is not mergeable, and says why.
-    fn merge(&self, repo: &RepoId, number: u64) -> Result<()> {
-        let _ = (repo, number);
+    /// Merge a pull, one of three ways. GitHub refuses one that is not
+    /// mergeable, or a method the repository does not allow, and says why.
+    fn merge(&self, repo: &RepoId, number: u64, method: MergeMethod) -> Result<()> {
+        let _ = (repo, number, method);
         Err(Error::Unsupported("merge"))
+    }
+    /// Every check and status on a commit.
+    fn checks(&self, repo: &RepoId, sha: &str) -> Result<Checks> {
+        let _ = (repo, sha);
+        Err(Error::Unsupported("read checks"))
+    }
+    /// Review a pull: approve it, ask for changes, or only comment.
+    fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
+        let _ = (repo, number, event, body);
+        Err(Error::Unsupported("review"))
+    }
+    /// The labels a repository has to offer.
+    fn labels(&self, repo: &RepoId) -> Result<Vec<Label>> {
+        let _ = repo;
+        Err(Error::Unsupported("list labels"))
+    }
+    /// Put labels on an item, keeping the ones it has.
+    fn add_labels(&self, repo: &RepoId, number: u64, labels: &[String]) -> Result<Item> {
+        let _ = (repo, number, labels);
+        Err(Error::Unsupported("add a label"))
+    }
+    /// Take one label off an item.
+    fn remove_label(&self, repo: &RepoId, number: u64, label: &str) -> Result<Item> {
+        let _ = (repo, number, label);
+        Err(Error::Unsupported("remove a label"))
+    }
+    /// The people an item in this repository can be assigned to.
+    fn assignees(&self, repo: &RepoId) -> Result<Vec<User>> {
+        let _ = repo;
+        Err(Error::Unsupported("list assignees"))
+    }
+    /// Assign people to an item, keeping the ones already on it.
+    fn add_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let _ = (repo, number, logins);
+        Err(Error::Unsupported("assign"))
+    }
+    /// Take people off an item.
+    fn remove_assignees(&self, repo: &RepoId, number: u64, logins: &[String]) -> Result<Item> {
+        let _ = (repo, number, logins);
+        Err(Error::Unsupported("unassign"))
+    }
+    /// The projects an owner — a user or an organisation — has.
+    fn projects(&self, owner: &str) -> Result<Vec<Project>> {
+        let _ = owner;
+        Err(Error::Unsupported("list projects"))
+    }
+    /// The projects an item is in.
+    fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
+        let _ = (repo, number);
+        Err(Error::Unsupported("list an item's projects"))
+    }
+    /// Put an item, by its global id, into a project.
+    fn add_to_project(&self, project_id: &str, node_id: &str) -> Result<()> {
+        let _ = (project_id, node_id);
+        Err(Error::Unsupported("add to a project"))
+    }
+    /// Take an item out of a project.
+    fn remove_from_project(&self, project_id: &str, item_id: &str) -> Result<()> {
+        let _ = (project_id, item_id);
+        Err(Error::Unsupported("remove from a project"))
     }
 }
