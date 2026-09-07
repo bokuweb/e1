@@ -31,6 +31,17 @@ use gpui_component::text::TextView;
 use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 use std::collections::HashSet;
 
+/// A turning spinner for what is still running: the toolkit's, on the
+/// loader glyph, so a check in progress moves instead of sitting there.
+fn spinner(size: Pixels, color: Hsla) -> AnyElement {
+    use gpui_component::Sizable as _;
+    gpui_component::spinner::Spinner::new()
+        .icon(IconName::LoaderCircle)
+        .with_size(size)
+        .color(color)
+        .into_any_element()
+}
+
 /// The reading measure, in pixels. Long-form text stays readable because the
 /// column stops growing, not because the window does.
 const MEASURE: f32 = 720.;
@@ -148,6 +159,8 @@ pub struct Detail {
     /// The merge button was pressed once; the next press merges.
     confirm_merge: bool,
     /// The checks card is unfolded to its runs.
+    /// Whether the checks card's runs are unfolded. Folded by default: the
+    /// summary line says what matters, and the runs are a press away.
     checks_open: bool,
     /// The diff's rows, virtualized with variable heights: a comment is
     /// taller than a line.
@@ -229,7 +242,7 @@ impl Detail {
             merge_menu: false,
             merge_method: MergeMethod::default(),
             confirm_merge: false,
-            checks_open: true,
+            checks_open: false,
             diff_state: ListState::new(0, ListAlignment::Top, px(300.)),
             split: false,
             composing: None,
@@ -490,7 +503,7 @@ impl Detail {
             self.confirm_merge = false;
             self.merge_menu = false;
             self.picker = None;
-            self.checks_open = true;
+            self.checks_open = false;
             self.composing = None;
         }
         self.showing = Some(showing);
@@ -1328,10 +1341,7 @@ impl Detail {
                 .size_3p5()
                 .text_color(colors.status_error)
                 .into_any_element(),
-            CheckState::Pending => Icon::new(IconName::LoaderCircle)
-                .size_3p5()
-                .text_color(colors.status_attention)
-                .into_any_element(),
+            CheckState::Pending => spinner(px(14.), colors.status_attention),
             // Skipped: a ring with a dash through it.
             CheckState::Neutral => div()
                 .size_3p5()
@@ -2150,7 +2160,7 @@ impl Detail {
                     )
                     .children(trailing)
             };
-        let badge = |color: Hsla, icon: IconName| {
+        let ring = |color: Hsla, mark: AnyElement| {
             div()
                 .size_6()
                 .flex_shrink_0()
@@ -2159,13 +2169,20 @@ impl Detail {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    Icon::new(icon)
-                        .size_3p5()
-                        .text_color(tokens.colors().bg_window),
-                )
+                .child(mark)
                 .into_any_element()
         };
+        let badge = |color: Hsla, icon: IconName| {
+            ring(
+                color,
+                Icon::new(icon)
+                    .size_3p5()
+                    .text_color(tokens.colors().bg_window)
+                    .into_any_element(),
+            )
+        };
+        // Still running: the badge turns.
+        let turning = |color: Hsla| ring(color, spinner(px(14.), tokens.colors().bg_window));
 
         // Checks.
         let (passed, failed, pending) = checks.as_ref().map(|c| c.tally()).unwrap_or_default();
@@ -2177,7 +2194,7 @@ impl Detail {
                 checks_error.clone().unwrap_or_default(),
             ),
             None => (
-                badge(muted, IconName::LoaderCircle),
+                turning(muted),
                 rust_i18n::t!("checks.unknown").to_string(),
                 String::new(),
             ),
@@ -2197,7 +2214,7 @@ impl Detail {
                 rust_i18n::t!("checks.failed_count", failed = failed, passed = passed).to_string(),
             ),
             Some(CheckState::Pending) => (
-                badge(amber, IconName::LoaderCircle),
+                turning(amber),
                 rust_i18n::t!("checks.pending").to_string(),
                 rust_i18n::t!("checks.pending_count", count = pending).to_string(),
             ),
@@ -2231,11 +2248,17 @@ impl Detail {
                         .iter()
                         .enumerate()
                         .map(|(index, run)| {
-                            let (color, icon) = match run.state {
-                                CheckState::Success => (green, IconName::Check),
-                                CheckState::Failure => (red, IconName::Close),
-                                CheckState::Pending => (amber, IconName::LoaderCircle),
-                                CheckState::Neutral => (muted, IconName::Minus),
+                            let mark = |color: Hsla, icon: IconName| {
+                                Icon::new(icon)
+                                    .size_3p5()
+                                    .text_color(color)
+                                    .into_any_element()
+                            };
+                            let mark = match run.state {
+                                CheckState::Success => mark(green, IconName::Check),
+                                CheckState::Failure => mark(red, IconName::Close),
+                                CheckState::Pending => spinner(px(14.), amber),
+                                CheckState::Neutral => mark(muted, IconName::Minus),
                             };
                             let url = run.html_url.clone();
                             // Two plain buttons, each doing one thing: the
@@ -2271,7 +2294,7 @@ impl Detail {
                                 .items_center()
                                 .border_t_1()
                                 .border_color(tokens.colors().border_subtle)
-                                .child(Icon::new(icon).size_3p5().text_color(color))
+                                .child(mark)
                                 .child(
                                     div()
                                         .flex_1()
@@ -2328,7 +2351,7 @@ impl Detail {
                 None,
             ),
             None => status_row(
-                badge(muted, IconName::LoaderCircle),
+                turning(muted),
                 rust_i18n::t!("conflicts.unknown").to_string(),
                 String::new(),
                 None,

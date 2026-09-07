@@ -306,7 +306,13 @@ impl Render for SignIn {
                         .items_center()
                         .text_size(px(11.5))
                         .text_color(muted)
-                        .child(Icon::new(IconName::LoaderCircle).size_3().text_color(muted))
+                        .child({
+                            use gpui_component::Sizable as _;
+                            gpui_component::spinner::Spinner::new()
+                                .icon(IconName::LoaderCircle)
+                                .with_size(px(12.))
+                                .color(muted)
+                        })
                         .child(rust_i18n::t!("signin.waiting").to_string()),
                 )
                 .into_any_element(),
