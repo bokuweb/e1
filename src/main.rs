@@ -59,6 +59,12 @@ fn open_at_launch() -> Option<((RepoId, u64), Option<String>)> {
     Some(((RepoId::parse(repo)?, number.parse().ok()?), file))
 }
 
+/// `E1_DEMO_LOG=2`: with `E1_DEMO_OPEN`, an Actions job whose log to open
+/// on top of the item. For screenshots of the log screen.
+fn log_at_launch() -> Option<u64> {
+    std::env::var("E1_DEMO_LOG").ok()?.parse().ok()
+}
+
 /// `E1_DEMO_FILES=owner/name:src/main.rs`: a repository's finder to open,
 /// with a file read. The path is optional. For screenshots.
 fn browse_at_launch() -> Option<(RepoId, Option<String>)> {
@@ -113,6 +119,7 @@ fn main() -> Result<()> {
             }));
 
             let open_at_launch = open_at_launch();
+            let log_at_launch = log_at_launch();
             let browse_at_launch = browse_at_launch();
             cx.open_window(options, |window, cx| {
                 let shell = cx.new(|cx| {
@@ -126,7 +133,9 @@ fn main() -> Result<()> {
                     )
                 });
                 if let Some((key, file)) = open_at_launch {
-                    shell.update(cx, |shell, cx| shell.open_at_launch(key, file, cx));
+                    shell.update(cx, |shell, cx| {
+                        shell.open_at_launch(key, file, log_at_launch, cx)
+                    });
                 }
                 if let Some((repo, file)) = browse_at_launch {
                     shell.update(cx, |shell, cx| shell.browse_at_launch(repo, file, cx));

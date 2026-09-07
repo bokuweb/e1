@@ -18,7 +18,7 @@ use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
 use e1_github::{
-    CheckState, Comment, FileStatus, MergeMethod, RepoId, ReviewComment, ReviewEvent, Side,
+    CheckState, Comment, FileStatus, JobStep, MergeMethod, RepoId, ReviewComment, ReviewEvent, Side,
 };
 use e1_ui::Tokens;
 use e1_ui::diff;
@@ -30,6 +30,17 @@ use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaSta
 use gpui_component::text::TextView;
 use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 use std::collections::HashSet;
+
+/// A turning spinner for what is still running: the toolkit's, on the
+/// loader glyph, so a check in progress moves instead of sitting there.
+fn spinner(size: Pixels, color: Hsla) -> AnyElement {
+    use gpui_component::Sizable as _;
+    gpui_component::spinner::Spinner::new()
+        .icon(IconName::LoaderCircle)
+        .with_size(size)
+        .color(color)
+        .into_any_element()
+}
 
 /// The reading measure, in pixels. Long-form text stays readable because the
 /// column stops growing, not because the window does.
@@ -64,6 +75,18 @@ enum Showing {
         job: u64,
         name: String,
     },
+}
+
+/// One row of the log screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogRow {
+    /// A step's heading: fold it or unfold it.
+    Step(usize),
+    /// A line of the log, under an unfolded step — or on its own when the
+    /// job reported no steps to put it under.
+    Line(usize),
+    /// The job reported no steps, so the log is shown whole.
+    NoSteps,
 }
 
 /// One row of the diff list.
@@ -136,6 +159,8 @@ pub struct Detail {
     /// The merge button was pressed once; the next press merges.
     confirm_merge: bool,
     /// The checks card is unfolded to its runs.
+    /// Whether the checks card's runs are unfolded. Folded by default: the
+    /// summary line says what matters, and the runs are a press away.
     checks_open: bool,
     /// The diff's rows, virtualized with variable heights: a comment is
     /// taller than a line.
@@ -150,6 +175,24 @@ pub struct Detail {
     clear_review: bool,
     /// A job's log, parsed once when it lands.
     log_lines: Vec<e1_ui::log::Line>,
+    /// What was on screen before the log, to go back to.
+    log_previous: Option<Showing>,
+    /// The job's steps, once they land.
+    log_steps: Vec<JobStep>,
+    /// Which step each log line falls under.
+    log_owner: Vec<usize>,
+    /// The steps that are unfolded, by number.
+    log_open: HashSet<u64>,
+    /// Whether the reader has folded or unfolded a step. Until they do,
+    /// the steps that failed, or are still running, unfold themselves.
+    log_touched: bool,
+    /// Whether the job answered without any steps.
+    log_flat: bool,
+    /// The log screen's rows, in order.
+    log_rows: Vec<LogRow>,
+    /// The log's list, which remembers each row's height so that long lines
+    /// can wrap.
+    log_state: ListState,
 }
 
 impl Detail {
@@ -199,26 +242,87 @@ impl Detail {
             merge_menu: false,
             merge_method: MergeMethod::default(),
             confirm_merge: false,
-            checks_open: true,
+            checks_open: false,
             diff_state: ListState::new(0, ListAlignment::Top, px(300.)),
             split: false,
             composing: None,
             review_input,
             clear_review: false,
             log_lines: Vec::new(),
+            log_previous: None,
+            log_steps: Vec::new(),
+            log_owner: Vec::new(),
+            log_open: HashSet::new(),
+            log_touched: false,
+            log_flat: false,
+            log_rows: Vec::new(),
+            log_state: ListState::new(0, ListAlignment::Top, px(300.)),
         }
     }
 
-    /// Show an Actions job's log.
+    /// Show an Actions job's log, remembering what was on screen so the
+    /// reader can go back to it.
     pub fn show_log(&mut self, repo: RepoId, job: u64, name: String, cx: &mut Context<Self>) {
+        if !matches!(self.showing, Some(Showing::Log { .. })) {
+            self.log_previous = self.showing.clone();
+        }
         self.showing = Some(Showing::Log {
             repo: repo.clone(),
             job,
             name,
         });
-        self.store
-            .update(cx, |store, cx| store.ensure_log(repo, job, cx));
+        self.log_open.clear();
+        self.log_touched = false;
+        self.store.update(cx, |store, cx| {
+            store.ensure_log(repo.clone(), job, cx);
+            store.ensure_job(repo, job, cx);
+        });
         self.rebuild(cx);
+    }
+
+    /// Leave the log for whatever was on screen before it.
+    fn go_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(previous) = self.log_previous.take() {
+            self.showing = Some(previous);
+            self.rebuild(cx);
+        }
+    }
+
+    /// Fold or unfold a step of the log.
+    fn toggle_step(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.log_touched = true;
+        if !self.log_open.remove(&number) {
+            self.log_open.insert(number);
+        }
+        self.rebuild_log_rows();
+        cx.notify();
+    }
+
+    /// Lay the log screen out again: a heading per step, and under each
+    /// unfolded one the lines that were written while it ran.
+    fn rebuild_log_rows(&mut self) {
+        self.log_rows.clear();
+        if self.log_steps.is_empty() {
+            if self.log_flat && !self.log_lines.is_empty() {
+                self.log_rows.push(LogRow::NoSteps);
+            }
+            self.log_rows
+                .extend((0..self.log_lines.len()).map(LogRow::Line));
+        } else {
+            for (index, step) in self.log_steps.iter().enumerate() {
+                self.log_rows.push(LogRow::Step(index));
+                if self.log_open.contains(&step.number) {
+                    self.log_rows.extend(
+                        self.log_owner
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, owner)| **owner == index)
+                            .map(|(line, _)| LogRow::Line(line)),
+                    );
+                }
+            }
+        }
+        self.log_state.reset(self.log_rows.len());
     }
 
     fn set_split(&mut self, split: bool, cx: &mut Context<Self>) {
@@ -399,7 +503,7 @@ impl Detail {
             self.confirm_merge = false;
             self.merge_menu = false;
             self.picker = None;
-            self.checks_open = true;
+            self.checks_open = false;
             self.composing = None;
         }
         self.showing = Some(showing);
@@ -459,8 +563,10 @@ impl Detail {
                     .update(cx, |store, cx| store.load_content(key, cx));
             }
             Some(Showing::Log { repo, job, .. }) => {
-                self.store
-                    .update(cx, |store, cx| store.load_log(repo, job, cx));
+                self.store.update(cx, |store, cx| {
+                    store.load_log(repo.clone(), job, cx);
+                    store.load_job(repo, job, cx);
+                });
             }
             None => {}
         }
@@ -478,7 +584,10 @@ impl Detail {
                 .content(key)
                 .and_then(|content| content.value())
                 .map(|content| content.html_url.clone()),
-            Showing::Log { .. } => None,
+            Showing::Log { repo, job, .. } => store
+                .job(repo, *job)
+                .and_then(|job| job.value())
+                .map(|job| job.html_url.clone()),
         }
     }
 
@@ -674,13 +783,33 @@ impl Detail {
                 }
             }
             Some(Showing::Log { repo, job, .. }) => {
-                self.log_lines = self
-                    .store
-                    .read(cx)
+                let store = self.store.read(cx);
+                self.log_lines = store
                     .log(repo, *job)
                     .and_then(|fetch| fetch.value())
                     .map(|text| e1_ui::log::parse(text))
                     .unwrap_or_default();
+                let job = store.job(repo, *job);
+                self.log_steps = job
+                    .and_then(|fetch| fetch.value())
+                    .map(|job| job.steps.clone())
+                    .unwrap_or_default();
+                self.log_flat = job.is_some_and(|fetch| {
+                    fetch.value().is_some_and(|job| job.steps.is_empty()) || fetch.error().is_some()
+                });
+                let starts: Vec<_> = self.log_steps.iter().map(|step| step.started_at).collect();
+                self.log_owner = e1_ui::log::assign(&self.log_lines, &starts);
+                if !self.log_touched {
+                    self.log_open = self
+                        .log_steps
+                        .iter()
+                        .filter(|step| {
+                            matches!(step.state, CheckState::Failure | CheckState::Pending)
+                        })
+                        .map(|step| step.number)
+                        .collect();
+                }
+                self.rebuild_log_rows();
             }
             _ => {}
         }
@@ -1176,9 +1305,112 @@ impl Detail {
             .into_any_element()
     }
 
+    /// One row of the log screen.
+    fn log_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        match self.log_rows.get(index) {
+            Some(LogRow::Step(step)) => self.log_step_row(*step, mono, cx),
+            Some(LogRow::Line(line)) => self.log_line_row(*line, mono, cx),
+            Some(LogRow::NoSteps) => div()
+                .w_full()
+                .px_4()
+                .py_2()
+                .text_size(px(11.5))
+                .text_color(Tokens::global(cx).colors().text_muted)
+                .child(rust_i18n::t!("log.no_steps").to_string())
+                .into_any_element(),
+            None => div().h(CODE_ROW).into_any_element(),
+        }
+    }
+
+    /// A step's heading, as GitHub draws it: a chevron to fold it, how it
+    /// went, its name, and how long it took.
+    fn log_step_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let Some(step) = self.log_steps.get(index) else {
+            return div().h(CODE_ROW).into_any_element();
+        };
+        let colors = tokens.colors();
+        let open = self.log_open.contains(&step.number);
+        let failed = step.state == CheckState::Failure;
+        let mark: AnyElement = match step.state {
+            CheckState::Success => Icon::new(IconName::Check)
+                .size_3p5()
+                .text_color(colors.status_done)
+                .into_any_element(),
+            CheckState::Failure => Icon::new(IconName::Close)
+                .size_3p5()
+                .text_color(colors.status_error)
+                .into_any_element(),
+            CheckState::Pending => spinner(px(14.), colors.status_attention),
+            // Skipped: a ring with a dash through it.
+            CheckState::Neutral => div()
+                .size_3p5()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_1()
+                .border_color(colors.text_muted)
+                .child(
+                    Icon::new(IconName::Minus)
+                        .size_2p5()
+                        .text_color(colors.text_muted),
+                )
+                .into_any_element(),
+        };
+        let number = step.number;
+        let hover = colors.row_hover();
+        h_flex()
+            .id(("log-step", index))
+            .w_full()
+            .pl_3()
+            .pr_4()
+            .py_1p5()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .border_t_1()
+            .border_color(colors.border_subtle)
+            .when(failed, |this| this.bg(colors.status_error.opacity(0.08)))
+            .hover(move |this| this.bg(hover))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_step(number, cx)))
+            .child(
+                Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size_3p5()
+                .text_color(colors.text_muted),
+            )
+            .child(mark)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.))
+                    .text_color(if failed {
+                        colors.status_error
+                    } else {
+                        colors.text_primary
+                    })
+                    .child(step.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_family(mono)
+                    .text_size(px(11.))
+                    .text_color(colors.text_muted)
+                    .child(step.duration()),
+            )
+            .into_any_element()
+    }
+
     /// One line of a job's log: the clock in the gutter, the text coloured
-    /// by what the runner marked it as.
-    fn log_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
+    /// by what the runner marked it as, wrapping when it is long.
+    fn log_line_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
         use e1_ui::log::Kind;
         let tokens = Tokens::global(cx);
         let Some(line) = self.log_lines.get(index) else {
@@ -1205,26 +1437,32 @@ impl Detail {
             ),
             Kind::Notice => (tokens.colors().text_muted, None, false),
         };
+        // Under a step the lines sit in from its heading; without steps
+        // they run from the edge.
+        let inset = if self.log_steps.is_empty() { 8. } else { 36. };
         h_flex()
-            .h(CODE_ROW)
             .w_full()
-            .px_1()
-            .items_center()
+            .min_h(CODE_ROW)
+            .pl(px(inset))
+            .pr_3()
+            .py(px(1.))
+            .items_start()
             .font_family(mono)
             .text_size(px(11.5))
-            .whitespace_nowrap()
-            .overflow_hidden()
             .when_some(fill, |this, fill| this.bg(fill))
             .child(
                 div()
                     .w(px(64.))
                     .flex_shrink_0()
                     .pr_3()
+                    .whitespace_nowrap()
                     .text_color(tokens.colors().text_muted)
                     .child(line.time.clone().unwrap_or_default()),
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_color(color)
                     .when(weight, |this| this.font_medium())
                     .child(line.text.clone()),
@@ -1922,7 +2160,7 @@ impl Detail {
                     )
                     .children(trailing)
             };
-        let badge = |color: Hsla, icon: IconName| {
+        let ring = |color: Hsla, mark: AnyElement| {
             div()
                 .size_6()
                 .flex_shrink_0()
@@ -1931,13 +2169,20 @@ impl Detail {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    Icon::new(icon)
-                        .size_3p5()
-                        .text_color(tokens.colors().bg_window),
-                )
+                .child(mark)
                 .into_any_element()
         };
+        let badge = |color: Hsla, icon: IconName| {
+            ring(
+                color,
+                Icon::new(icon)
+                    .size_3p5()
+                    .text_color(tokens.colors().bg_window)
+                    .into_any_element(),
+            )
+        };
+        // Still running: the badge turns.
+        let turning = |color: Hsla| ring(color, spinner(px(14.), tokens.colors().bg_window));
 
         // Checks.
         let (passed, failed, pending) = checks.as_ref().map(|c| c.tally()).unwrap_or_default();
@@ -1949,7 +2194,7 @@ impl Detail {
                 checks_error.clone().unwrap_or_default(),
             ),
             None => (
-                badge(muted, IconName::LoaderCircle),
+                turning(muted),
                 rust_i18n::t!("checks.unknown").to_string(),
                 String::new(),
             ),
@@ -1969,7 +2214,7 @@ impl Detail {
                 rust_i18n::t!("checks.failed_count", failed = failed, passed = passed).to_string(),
             ),
             Some(CheckState::Pending) => (
-                badge(amber, IconName::LoaderCircle),
+                turning(amber),
                 rust_i18n::t!("checks.pending").to_string(),
                 rust_i18n::t!("checks.pending_count", count = pending).to_string(),
             ),
@@ -2003,16 +2248,42 @@ impl Detail {
                         .iter()
                         .enumerate()
                         .map(|(index, run)| {
-                            let (color, icon) = match run.state {
-                                CheckState::Success => (green, IconName::Check),
-                                CheckState::Failure => (red, IconName::Close),
-                                CheckState::Pending => (amber, IconName::LoaderCircle),
-                                CheckState::Neutral => (muted, IconName::Minus),
+                            let mark = |color: Hsla, icon: IconName| {
+                                Icon::new(icon)
+                                    .size_3p5()
+                                    .text_color(color)
+                                    .into_any_element()
+                            };
+                            let mark = match run.state {
+                                CheckState::Success => mark(green, IconName::Check),
+                                CheckState::Failure => mark(red, IconName::Close),
+                                CheckState::Pending => spinner(px(14.), amber),
+                                CheckState::Neutral => mark(muted, IconName::Minus),
                             };
                             let url = run.html_url.clone();
-                            let opens = run
-                                .actions
-                                .then(|| (key.0.clone(), run.id, run.name.clone()));
+                            // Two plain buttons, each doing one thing: the
+                            // row itself does nothing on a click, so that
+                            // opening the browser cannot also open the log.
+                            let chip = |id: (&'static str, usize),
+                                        icon: IconName,
+                                        label: String,
+                                        color: Hsla| {
+                                h_flex()
+                                    .id(id)
+                                    .flex_shrink_0()
+                                    .gap_1()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(px(5.))
+                                    .border_1()
+                                    .border_color(tokens.colors().border_subtle)
+                                    .text_size(px(11.))
+                                    .text_color(color)
+                                    .cursor_pointer()
+                                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                                    .child(Icon::new(icon).size_3().text_color(color))
+                                    .child(label)
+                            };
                             h_flex()
                                 .id(("check-run", index))
                                 .w_full()
@@ -2023,14 +2294,7 @@ impl Detail {
                                 .items_center()
                                 .border_t_1()
                                 .border_color(tokens.colors().border_subtle)
-                                .when_some(opens, |this, (repo, job, name)| {
-                                    this.cursor_pointer()
-                                        .hover(|this| this.bg(tokens.colors().row_hover()))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.show_log(repo.clone(), job, name.clone(), cx)
-                                        }))
-                                })
-                                .child(Icon::new(icon).size_3p5().text_color(color))
+                                .child(mark)
                                 .child(
                                     div()
                                         .flex_1()
@@ -2042,24 +2306,26 @@ impl Detail {
                                 .children(run.actions.then(|| {
                                     let (repo, job, name) =
                                         (key.0.clone(), run.id, run.name.clone());
-                                    div()
-                                        .id(("check-log", index))
-                                        .text_size(px(11.5))
-                                        .text_color(tokens.colors().accent)
-                                        .cursor_pointer()
-                                        .child(rust_i18n::t!("checks.log").to_string())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                    chip(
+                                        ("check-log", index),
+                                        IconName::SquareTerminal,
+                                        rust_i18n::t!("checks.log").to_string(),
+                                        tokens.colors().accent,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
                                             this.show_log(repo.clone(), job, name.clone(), cx)
-                                        }))
+                                        },
+                                    ))
                                 }))
                                 .children(url.map(|url| {
-                                    div()
-                                        .id(("check-details", index))
-                                        .text_size(px(11.5))
-                                        .text_color(tokens.colors().text_muted)
-                                        .cursor_pointer()
-                                        .child(rust_i18n::t!("checks.details").to_string())
-                                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                                    chip(
+                                        ("check-details", index),
+                                        IconName::ExternalLink,
+                                        rust_i18n::t!("checks.details").to_string(),
+                                        tokens.colors().text_muted,
+                                    )
+                                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                                 }))
                                 .into_any_element()
                         })
@@ -2085,7 +2351,7 @@ impl Detail {
                 None,
             ),
             None => status_row(
-                badge(muted, IconName::LoaderCircle),
+                turning(muted),
                 rust_i18n::t!("conflicts.unknown").to_string(),
                 String::new(),
                 None,
@@ -2668,11 +2934,28 @@ impl Detail {
         let head = v_flex()
             .w_full()
             .px_5()
-            .pt_4()
+            .pt_3()
             .pb_3()
             .gap_1()
             .border_b_1()
             .border_color(tokens.colors().border_subtle)
+            .when(self.log_previous.is_some(), |this| {
+                this.child(
+                    h_flex()
+                        .id("log-back")
+                        .w_auto()
+                        .self_start()
+                        .mb_1()
+                        .gap_0p5()
+                        .items_center()
+                        .text_size(px(11.5))
+                        .text_color(tokens.colors().accent)
+                        .cursor_pointer()
+                        .child(Icon::new(IconName::ChevronLeft).size_3p5())
+                        .child(rust_i18n::t!("log.back").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
+                )
+            })
             .child(
                 div()
                     .text_size(px(13.))
@@ -2696,12 +2979,8 @@ impl Detail {
         let body: AnyElement = match (text, error) {
             (Some(_), _) => {
                 let this = cx.entity();
-                uniform_list("log", self.log_lines.len(), move |range, _window, cx| {
-                    this.update(cx, |this, cx| {
-                        range
-                            .map(|index| this.log_row(index, mono.clone(), cx))
-                            .collect()
-                    })
+                list(self.log_state.clone(), move |index, _window, cx| {
+                    this.update(cx, |this, cx| this.log_row(index, mono.clone(), cx))
                 })
                 .flex_1()
                 .size_full()

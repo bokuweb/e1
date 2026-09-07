@@ -196,6 +196,11 @@ pub trait GitHub: Send + Sync {
         let _ = (node_id, draft);
         Err(Error::Unsupported("change draft state"))
     }
+    /// A GitHub Actions job: its steps and how each went.
+    fn job(&self, repo: &RepoId, job_id: u64) -> Result<Job> {
+        let _ = (repo, job_id);
+        Err(Error::Unsupported("read a job"))
+    }
     /// The log of a GitHub Actions job, as plain text.
     fn job_log(&self, repo: &RepoId, job_id: u64) -> Result<String> {
         let _ = (repo, job_id);

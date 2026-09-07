@@ -445,6 +445,52 @@ pub struct ProjectMembership {
     pub item_id: String,
 }
 
+/// One step of a GitHub Actions job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobStep {
+    /// Its place in the job, from one.
+    pub number: u64,
+    /// Its name: the step's `name`, or `Run …` when it had none.
+    pub name: String,
+    /// What it came to.
+    pub state: CheckState,
+    /// When it started, when it did.
+    pub started_at: Option<DateTime<Utc>>,
+    /// When it finished, when it did.
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl JobStep {
+    /// How long it took, as `34s` or `1m 19s`; empty while it runs or
+    /// when it never ran.
+    pub fn duration(&self) -> String {
+        let (Some(start), Some(end)) = (self.started_at, self.completed_at) else {
+            return String::new();
+        };
+        let seconds = (end - start).num_seconds().max(0);
+        if seconds >= 60 {
+            format!("{}m {}s", seconds / 60, seconds % 60)
+        } else {
+            format!("{seconds}s")
+        }
+    }
+}
+
+/// A GitHub Actions job: what its steps were and how each went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Job {
+    /// GitHub's id, which the log is fetched by.
+    pub id: u64,
+    /// Its name.
+    pub name: String,
+    /// What it came to.
+    pub state: CheckState,
+    /// Its steps, in order.
+    pub steps: Vec<JobStep>,
+    /// Where it lives on the web.
+    pub html_url: String,
+}
+
 /// Which side of a diff a review comment sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {

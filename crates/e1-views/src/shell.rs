@@ -263,14 +263,23 @@ impl Shell {
     /// Open an item on its files as soon as the window is up.
     ///
     /// For demos and screenshots (`E1_DEMO_OPEN=owner/name#12:src/main.rs`,
-    /// the path optional): a native window cannot be driven from a script
-    /// the way a page can, and a screenshot of the diff view is worth an
-    /// environment variable.
-    pub fn open_at_launch(&mut self, key: ItemKey, file: Option<String>, cx: &mut Context<Self>) {
+    /// the path optional; `E1_DEMO_LOG=2` for a job's log on top): a native
+    /// window cannot be driven from a script the way a page can, and a
+    /// screenshot of the diff view is worth an environment variable.
+    pub fn open_at_launch(
+        &mut self,
+        key: ItemKey,
+        file: Option<String>,
+        log: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         self.detail.update(cx, |detail, cx| {
-            detail.show(key, None, cx);
+            detail.show(key.clone(), None, cx);
             if file.is_some() {
                 detail.show_files(file, cx);
+            }
+            if let Some(job) = log {
+                detail.show_log(key.0, job, format!("job {job}"), cx);
             }
         });
         if !self.layout.is_open(Panel::RightPanel) {

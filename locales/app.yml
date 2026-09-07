@@ -329,8 +329,8 @@ checks.none:
   en: No checks on this commit
   ja: このコミットにチェックはありません
 checks.details:
-  en: Details
-  ja: 詳細
+  en: Open in browser
+  ja: ブラウザで開く
 conflicts.none:
   en: No conflicts with base branch
   ja: ベースブランチとの競合はありません
@@ -431,3 +431,9 @@ log.title:
 log.lines:
   en: "%{count} lines"
   ja: "%{count} 行"
+log.back:
+  en: Back
+  ja: 戻る
+log.no_steps:
+  en: This job reported no steps; the log is shown whole.
+  ja: このジョブにはステップ情報がないため、ログをそのまま表示します。
