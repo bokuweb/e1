@@ -13,7 +13,7 @@
 //! rather than opening empty and waiting.
 
 use e1_github::{
-    Checks, FileContent, GitHub, Item, Label, ListKind, MergeMethod, Notification, Project,
+    Checks, FileContent, GitHub, Item, Job, Label, ListKind, MergeMethod, Notification, Project,
     ProjectMembership, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree, User,
     Viewer,
 };
@@ -76,6 +76,8 @@ pub struct Store {
     review_comments: HashMap<ItemKey, Fetch<Vec<ReviewComment>>>,
     /// Each Actions job's log, by repository and job id.
     logs: HashMap<(RepoId, u64), Fetch<String>>,
+    /// Each Actions job's steps, by repository and job id.
+    jobs: HashMap<(RepoId, u64), Fetch<Job>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -105,6 +107,36 @@ impl Store {
             checks: HashMap::new(),
             review_comments: HashMap::new(),
             logs: HashMap::new(),
+            jobs: HashMap::new(),
+        }
+    }
+
+    /// A job's steps, if they have ever been asked for.
+    pub fn job(&self, repo: &RepoId, job: u64) -> Option<&Fetch<Job>> {
+        self.jobs.get(&(repo.clone(), job))
+    }
+
+    /// Fetch a job's steps.
+    pub fn load_job(&mut self, repo: RepoId, job: u64, cx: &mut Context<Self>) {
+        let key = (repo.clone(), job);
+        self.jobs.entry(key.clone()).or_default().begin();
+        self.fetch(
+            cx,
+            move |github| github.job(&repo, job),
+            move |this, result, _| {
+                this.jobs.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch a job's steps only if they never have been.
+    pub fn ensure_job(&mut self, repo: RepoId, job: u64, cx: &mut Context<Self>) {
+        if self
+            .jobs
+            .get(&(repo.clone(), job))
+            .is_none_or(Fetch::is_idle)
+        {
+            self.load_job(repo, job, cx);
         }
     }
 

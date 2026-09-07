@@ -716,12 +716,72 @@ impl GitHub for Scripted {
         Ok(())
     }
 
+    fn job(&self, _repo: &RepoId, job_id: u64) -> Result<Job> {
+        let _guard = self.guard()?;
+        let at = |second: u32| {
+            Some(
+                chrono::DateTime::parse_from_rfc3339(&format!("2026-09-07T00:00:{second:02}Z"))
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+        };
+        let step = |number: u64, name: &str, state: CheckState, from: u32, to: u32| JobStep {
+            number,
+            name: name.to_string(),
+            state,
+            started_at: at(from),
+            completed_at: at(to),
+        };
+        // Job 2 is the one whose test failed in the sample checks.
+        let failing = job_id == 2;
+        Ok(Job {
+            id: job_id,
+            name: if job_id == 1 { "build" } else { "test" }.to_string(),
+            state: if failing {
+                CheckState::Failure
+            } else {
+                CheckState::Success
+            },
+            steps: vec![
+                step(1, "Set up job", CheckState::Success, 0, 3),
+                step(2, "Run actions/checkout@v4", CheckState::Success, 3, 8),
+                step(3, "Install dependencies", CheckState::Success, 8, 20),
+                step(
+                    4,
+                    "Run cargo test",
+                    if failing {
+                        CheckState::Failure
+                    } else {
+                        CheckState::Success
+                    },
+                    20,
+                    36,
+                ),
+                step(5, "Upload artifacts", CheckState::Neutral, 36, 36),
+                step(6, "Complete job", CheckState::Success, 36, 40),
+            ],
+            html_url: "https://github.com/bokuweb/e1/actions".into(),
+        })
+    }
+
     fn job_log(&self, _repo: &RepoId, job_id: u64) -> Result<String> {
         let _guard = self.guard()?;
-        Ok((1..=40)
-            .map(|n| format!("2026-09-07T00:00:{n:02}.000Z job {job_id}: step {n} of 40 … ok"))
-            .collect::<Vec<_>>()
-            .join("\n"))
+        let mut lines: Vec<String> = Vec::new();
+        for n in 0..40u32 {
+            let stamp = format!("2026-09-07T00:00:{n:02}.100Z");
+            let text = match n {
+                0 => "##[group]Runner Image".to_string(),
+                1 => "Image: ubuntu-24.04".to_string(),
+                2 => "##[endgroup]".to_string(),
+                3 => "##[group]Run actions/checkout@v4".to_string(),
+                8 => "##[command]cargo fetch".to_string(),
+                20 => "##[command]cargo test --workspace".to_string(),
+                30 if job_id == 2 => "##[error]test result: FAILED. 1 failed".to_string(),
+                _ => format!("job {job_id}: line {n} of 40 … ok"),
+            };
+            lines.push(format!("{stamp} {text}"));
+        }
+        Ok(lines.join("\n"))
     }
 
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
@@ -1061,6 +1121,10 @@ mod tests {
 
         let log = github.job_log(&e1, 1).unwrap();
         assert_eq!(log.lines().count(), 40);
+        let job = github.job(&e1, 2).unwrap();
+        assert_eq!(job.steps.len(), 6);
+        assert_eq!(job.steps[3].state, CheckState::Failure);
+        assert_eq!(job.steps[2].duration(), "12s");
         let checks = github.checks(&e1, "sha-inbox-rows").unwrap();
         assert!(checks.runs.iter().all(|run| run.actions && run.id > 0));
     }

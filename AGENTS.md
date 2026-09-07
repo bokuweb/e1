@@ -23,6 +23,7 @@ cargo run --release                         # the desktop app; signs in, or uses
 cargo run                                   # the same, in the dev profile: dependencies optimised, ours not
 E1_DEMO=1 cargo run                         # the same window over scripted data, no network
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12:src/shell.rs' cargo run   # …opened on a pull's diff, for screenshots
+E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12' E1_DEMO_LOG=2 cargo run   # …opened on a job's log, grouped by step
 E1_DEMO=1 E1_DEMO_FILES='bokuweb/e1:src/main.rs' cargo run         # …opened on a repository's finder with a file read
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings

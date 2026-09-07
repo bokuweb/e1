@@ -3,7 +3,11 @@
 //! The runner writes every line with an ISO timestamp in front and marks
 //! structure with `##[group]`, `##[error]` and their kin. A reader wants
 //! the clock as a short time in the gutter and the markers as colour and
-//! weight, not as text, so the log is walked once here.
+//! weight, not as text, so the log is walked once here. The runner does
+//! not say which step a line belongs to; the job's steps say when each
+//! ran, and [`assign`] puts the lines under them by the clock.
+
+use chrono::{DateTime, Utc};
 
 /// What a line is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +33,8 @@ pub enum Kind {
 pub struct Line {
     /// `HH:MM:SS`, when the line had a timestamp.
     pub time: Option<String>,
+    /// The whole timestamp, for placing the line in a step.
+    pub stamp: Option<DateTime<Utc>>,
     /// What it is.
     pub kind: Kind,
     /// The text, without the timestamp and without the marker.
@@ -41,10 +47,11 @@ pub fn parse(text: &str) -> Vec<Line> {
     text.lines()
         .map(|raw| raw.trim_start_matches('\u{feff}'))
         .filter_map(|raw| {
-            let (time, rest) = split_time(raw);
+            let (stamp, rest) = split_time(raw);
             let (kind, text) = split_marker(rest);
             (kind != Kind::EndGroup).then(|| Line {
-                time,
+                time: stamp.map(|stamp| stamp.format("%H:%M:%S").to_string()),
+                stamp,
                 kind,
                 text: text.to_string(),
             })
@@ -52,8 +59,8 @@ pub fn parse(text: &str) -> Vec<Line> {
         .collect()
 }
 
-/// `2026-09-07T01:58:00.7200450Z rest` → (`01:58:00`, `rest`).
-fn split_time(raw: &str) -> (Option<String>, &str) {
+/// `2026-09-07T01:58:00.7200450Z rest` → (the instant, `rest`).
+fn split_time(raw: &str) -> (Option<DateTime<Utc>>, &str) {
     let Some((stamp, rest)) = raw.split_once(' ') else {
         return (None, raw);
     };
@@ -61,11 +68,38 @@ fn split_time(raw: &str) -> (Option<String>, &str) {
         && stamp.as_bytes().get(4) == Some(&b'-')
         && stamp.as_bytes().get(10) == Some(&b'T')
         && stamp.ends_with('Z');
-    if looks_like_time {
-        (Some(stamp[11..19].to_string()), rest)
-    } else {
-        (None, raw)
+    if !looks_like_time {
+        return (None, raw);
     }
+    match DateTime::parse_from_rfc3339(stamp) {
+        Ok(at) => (Some(at.with_timezone(&Utc)), rest),
+        Err(_) => (None, raw),
+    }
+}
+
+/// Which step each line belongs to, by the clock.
+///
+/// `starts` are the steps' start times in order; a step that never ran
+/// has none. A line goes with the last step that had started when it was
+/// written. Lines before the first step, and lines with no clock, go with
+/// the step before them — the first, at the top.
+pub fn assign(lines: &[Line], starts: &[Option<DateTime<Utc>>]) -> Vec<usize> {
+    let mut current = 0;
+    lines
+        .iter()
+        .map(|line| {
+            if let Some(stamp) = line.stamp {
+                for (index, start) in starts.iter().enumerate().skip(current + 1) {
+                    match start {
+                        Some(start) if *start <= stamp => current = index,
+                        Some(_) => break,
+                        None => {}
+                    }
+                }
+            }
+            current
+        })
+        .collect()
 }
 
 fn split_marker(text: &str) -> (Kind, &str) {
@@ -121,6 +155,24 @@ mod tests {
         );
         assert_eq!(lines[0].text, "Run cargo test");
         assert_eq!(lines[3].text, "Process completed with exit code 1.");
+    }
+
+    #[test]
+    fn lines_fall_under_the_step_that_was_running() {
+        let text = "2026-09-07T00:00:00.5Z a\n2026-09-07T00:00:03.2Z b\nno clock\n2026-09-07T00:00:08.0Z c";
+        let lines = parse(text);
+        let at = |s: &str| Some(DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc));
+        let starts = [
+            at("2026-09-07T00:00:00Z"),
+            at("2026-09-07T00:00:03Z"),
+            at("2026-09-07T00:00:08Z"),
+        ];
+        assert_eq!(assign(&lines, &starts), [0, 1, 1, 2]);
+        // A step that never ran is passed over, not stopped at.
+        let skipped = [starts[0], None, starts[2]];
+        assert_eq!(assign(&lines, &skipped), [0, 0, 0, 2]);
+        assert_eq!(assign(&lines, &[starts[0], None]), [0, 0, 0, 0]);
+        assert_eq!(assign(&lines, &[]), [0, 0, 0, 0]);
     }
 
     #[test]

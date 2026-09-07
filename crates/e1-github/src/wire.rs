@@ -328,6 +328,73 @@ impl From<WireCheckRun> for CheckRun {
     }
 }
 
+/// What `/actions/jobs/{id}` sends.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireJob {
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<WireJobStep>,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireJobStep {
+    #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// GitHub's `status` + `conclusion` pair, as one state.
+fn check_state(status: &str, conclusion: Option<&str>) -> CheckState {
+    if status != "completed" {
+        CheckState::Pending
+    } else {
+        match conclusion {
+            Some("success") => CheckState::Success,
+            Some("neutral") | Some("skipped") => CheckState::Neutral,
+            _ => CheckState::Failure,
+        }
+    }
+}
+
+impl From<WireJob> for Job {
+    fn from(job: WireJob) -> Self {
+        Self {
+            id: job.id,
+            name: job.name,
+            state: check_state(&job.status, job.conclusion.as_deref()),
+            steps: job
+                .steps
+                .into_iter()
+                .map(|step| JobStep {
+                    number: step.number,
+                    name: step.name,
+                    state: check_state(&step.status, step.conclusion.as_deref()),
+                    started_at: step.started_at,
+                    completed_at: step.completed_at,
+                })
+                .collect(),
+            html_url: job.html_url,
+        }
+    }
+}
+
 /// What `/pulls/{n}/comments` sends: a comment on a line of the diff.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireReviewComment {

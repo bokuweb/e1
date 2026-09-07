@@ -482,6 +482,11 @@ impl GitHub for Rest {
         Ok(())
     }
 
+    fn job(&self, repo: &RepoId, job_id: u64) -> Result<Job> {
+        let (job, _): (WireJob, _) = self.get(&format!("/repos/{repo}/actions/jobs/{job_id}"))?;
+        Ok(job.into())
+    }
+
     fn job_log(&self, repo: &RepoId, job_id: u64) -> Result<String> {
         // GitHub answers with a redirect to the log itself, which ureq
         // follows; the body is plain text, not JSON.
