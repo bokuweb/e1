@@ -25,15 +25,16 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Resolve the user's choice against the window's actual appearance.
+    /// Resolve the reader's choice against the window's actual appearance.
     ///
-    /// `Appearance::System` is not a third theme: it is a deferral to the OS,
-    /// and the OS answer can change while the app is running.
-    pub fn resolve(choice: Appearance, system: WindowAppearance) -> Self {
+    /// No choice is not a third theme: it is what the window opens on
+    /// before anyone has picked, which is whatever the OS is showing, and
+    /// the OS answer can change while the app is running.
+    pub fn resolve(choice: Option<Appearance>, system: WindowAppearance) -> Self {
         match choice {
-            Appearance::Light => Self::Light,
-            Appearance::Dark => Self::Dark,
-            Appearance::System => match system {
+            Some(Appearance::Light) => Self::Light,
+            Some(Appearance::Dark) => Self::Dark,
+            None => match system {
                 WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
                 WindowAppearance::Light | WindowAppearance::VibrantLight => Self::Light,
             },
@@ -61,12 +62,13 @@ pub struct Tokens {
 }
 
 /// What a theme file says about itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeAppearance {
     /// Light.
     Light,
     /// Dark.
+    #[default]
     Dark,
 }
 
@@ -78,6 +80,14 @@ pub enum ThemeAppearance {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Colors {
+    /// Which side of the light/dark line these colours are on, copied from
+    /// the theme when it is loaded rather than written in the file.
+    ///
+    /// The derived fills below need it: a tint that reads as a soft
+    /// highlight on a dark ground is a bruise on a light one, and the same
+    /// number cannot serve both.
+    #[serde(skip)]
+    appearance: ThemeAppearance,
     /// The window base, translucent.
     #[serde(rename = "bg.window", deserialize_with = "hex")]
     pub bg_window: Hsla,
@@ -182,7 +192,9 @@ impl Tokens {
         };
         // The themes are compiled in, so a parse failure is a build-time
         // authoring mistake and the tests below catch it.
-        serde_json::from_str(source).expect("built-in theme is valid")
+        let mut tokens: Tokens = serde_json::from_str(source).expect("built-in theme is valid");
+        tokens.colors.appearance = tokens.appearance;
+        tokens
     }
 
     /// The installed tokens.
@@ -352,6 +364,14 @@ pub fn apply(mode: Mode, cx: &mut App) {
     // `Root` and several components paint from the derived semantic tokens
     // rather than from `colors`. Without regenerating them the window keeps
     // the toolkit's opaque default background, which cancels the glass.
+    // The toolkit highlights fenced code in markdown with this, and it is
+    // set once at startup otherwise: without it, a code block in a comment
+    // keeps the light palette all the way through the dark theme.
+    theme.highlight_theme = match mode {
+        Mode::Dark => gpui_component::highlighter::HighlightTheme::default_dark(),
+        Mode::Light => gpui_component::highlighter::HighlightTheme::default_light(),
+    };
+
     theme.tokens = (&theme.colors).into();
     gpui_component::Theme::sync_base(cx);
 }
@@ -365,16 +385,25 @@ impl Colors {
         color
     }
 
+    /// Whether these are the light theme's colours.
+    fn light(&self) -> bool {
+        self.appearance == ThemeAppearance::Light
+    }
+
     /// A row under the pointer: the accent at a fraction of itself rather
     /// than a grey fill, because a grey fill over a translucent window is what
     /// turns glass into cardboard.
+    ///
+    /// The fraction is smaller on the light theme. A tint reads against a
+    /// dark ground by adding light, which is gentle; against a light one it
+    /// reads by adding colour, which at the same strength is a stain.
     pub fn row_hover(&self) -> Hsla {
-        self.accent.opacity(0.14)
+        self.accent.opacity(if self.light() { 0.08 } else { 0.14 })
     }
 
     /// The row you are on.
     pub fn row_active(&self) -> Hsla {
-        self.accent.opacity(0.22)
+        self.accent.opacity(if self.light() { 0.14 } else { 0.22 })
     }
 
     /// A popover's fill: the raised surface made opaque, because a menu
@@ -397,10 +426,11 @@ impl Colors {
         color
     }
 
-    /// A table's head: black at a third over the glass, so it reads as a
-    /// band and still lets the blur through.
+    /// A table's head: black over the glass, so it reads as a band and still
+    /// lets the blur through. A third of it is a band on the dark theme and
+    /// a slab on the light one, where the text over it is black too.
     pub fn table_head(&self) -> Hsla {
-        gpui::black().opacity(0.35)
+        gpui::black().opacity(if self.light() { 0.05 } else { 0.35 })
     }
 
     /// A raised control the pointer is over.
@@ -412,6 +442,18 @@ impl Colors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_light_theme_tints_more_gently_than_the_dark_one() {
+        let light = Tokens::load(Mode::Light);
+        let dark = Tokens::load(Mode::Dark);
+        assert_eq!(light.colors().appearance, ThemeAppearance::Light);
+        assert_eq!(dark.colors().appearance, ThemeAppearance::Dark);
+        assert!(light.colors().row_active().a < dark.colors().row_active().a);
+        assert!(light.colors().row_hover().a < dark.colors().row_hover().a);
+        // A band under black text cannot be a third of black.
+        assert!(light.colors().table_head().a < 0.1);
+    }
 
     #[test]
     fn both_built_in_themes_parse() {
@@ -442,18 +484,19 @@ mod tests {
     }
 
     #[test]
-    fn system_appearance_defers_to_the_os_but_an_explicit_choice_wins() {
+    fn an_unmade_choice_takes_the_os_and_a_made_one_wins() {
+        assert_eq!(Mode::resolve(None, WindowAppearance::Dark), Mode::Dark);
         assert_eq!(
-            Mode::resolve(Appearance::System, WindowAppearance::Dark),
+            Mode::resolve(None, WindowAppearance::VibrantLight),
+            Mode::Light
+        );
+        assert_eq!(
+            Mode::resolve(Some(Appearance::Light), WindowAppearance::Dark),
+            Mode::Light
+        );
+        assert_eq!(
+            Mode::resolve(Some(Appearance::Dark), WindowAppearance::Light),
             Mode::Dark
-        );
-        assert_eq!(
-            Mode::resolve(Appearance::System, WindowAppearance::VibrantLight),
-            Mode::Light
-        );
-        assert_eq!(
-            Mode::resolve(Appearance::Light, WindowAppearance::Dark),
-            Mode::Light
         );
     }
 

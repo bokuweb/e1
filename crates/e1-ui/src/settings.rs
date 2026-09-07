@@ -12,8 +12,10 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppSettings {
-    /// Light, dark, or whatever the OS says.
-    pub appearance: Appearance,
+    /// Light or dark; `None` until the reader picks one, which means the
+    /// window takes the OS's answer and follows it.
+    #[serde(deserialize_with = "chosen")]
+    pub appearance: Option<Appearance>,
     /// Whether the navigation column is showing.
     pub sidebar_open: bool,
     /// Its width, kept while it is closed.
@@ -33,7 +35,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            appearance: Appearance::System,
+            appearance: None,
             // The defaults in docs/ui.md §2. Unlike Ginka, the right panel
             // starts open: it is the reading pane, and there is something to
             // read the moment a row is picked.
@@ -48,17 +50,33 @@ impl Default for AppSettings {
     }
 }
 
-/// The theme choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// The theme choice: one of two, or none until the reader makes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Appearance {
-    /// Always light.
+    /// Light.
     Light,
-    /// Always dark.
+    /// Dark.
     Dark,
-    /// Whatever the window's appearance is, and follow it when it changes.
-    #[default]
-    System,
+}
+
+/// What an older settings file may hold where the choice goes.
+///
+/// The control used to have a third state, `system`, which deferred to the
+/// OS. There are two now, and a file that still says `system` — or anything
+/// else unreadable — reads as no choice at all, which behaves the way that
+/// third state did until the reader picks: the window opens on whatever the
+/// OS is showing, and follows it while nothing has been chosen.
+fn chosen<'de, D>(deserializer: D) -> Result<Option<Appearance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(match raw.as_deref() {
+        Some("light") => Some(Appearance::Light),
+        Some("dark") => Some(Appearance::Dark),
+        _ => None,
+    })
 }
 
 /// Read a settings file, falling back to defaults.
@@ -103,6 +121,18 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_settings_file_from_when_there_were_three_appearances_still_loads() {
+        let older: AppSettings =
+            serde_json::from_str(r#"{"appearance":"system","sidebar_width":300.0}"#).unwrap();
+        // The third state is gone; what is left of it is "no choice yet",
+        // and the rest of the file survives rather than being reset.
+        assert_eq!(older.appearance, None);
+        assert_eq!(older.sidebar_width, 300.0);
+        let chosen: AppSettings = serde_json::from_str(r#"{"appearance":"light"}"#).unwrap();
+        assert_eq!(chosen.appearance, Some(Appearance::Light));
+    }
 
     #[test]
     fn the_reading_pane_starts_open() {

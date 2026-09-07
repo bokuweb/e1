@@ -16,6 +16,7 @@ use e1_github::auth::{Keychain, Source};
 use e1_github::{GitHub, HttpCache, Rest, Scripted, StatusFilter};
 use e1_ui::Mode;
 use e1_ui::settings::{self, AppSettings, Appearance};
+use e1_ui::theme::ThemeAppearance;
 use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -173,7 +174,7 @@ impl Shell {
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
             SidebarEvent::SignOut => this.sign_out(cx),
-            SidebarEvent::CycleAppearance => this.cycle_appearance(cx),
+            SidebarEvent::ToggleAppearance => this.toggle_appearance(cx),
             SidebarEvent::OwnerToggled { owner, collapsed } => {
                 this.settings.collapsed_owners.retain(|o| o != owner);
                 if *collapsed {
@@ -223,7 +224,6 @@ impl Shell {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         sidebar.update(cx, |sidebar, cx| {
-            sidebar.set_appearance(settings.appearance, cx);
             sidebar.set_collapsed(settings.collapsed_owners.iter().cloned(), cx);
         });
 
@@ -298,7 +298,9 @@ impl Shell {
         self.refocus(Focus::files(repo.clone()), cx);
         if let Some(path) = path {
             self.detail
-                .update(cx, |detail, cx| detail.show_file((repo, path), cx));
+                .update(cx, |detail, cx| detail.show_file((repo, path.clone()), cx));
+            self.browser
+                .update(cx, |browser, cx| browser.reveal(&path, cx));
         }
     }
 
@@ -342,25 +344,29 @@ impl Shell {
         cx.notify();
     }
 
-    /// Dark, then light, then the system's, then dark again.
-    fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
-        self.settings.appearance = match self.settings.appearance {
-            Appearance::Dark => Appearance::Light,
-            Appearance::Light => Appearance::System,
-            Appearance::System => Appearance::Dark,
-        };
+    /// Light to dark and back.
+    ///
+    /// The flip is from what is on screen rather than from what is stored,
+    /// because nothing may be stored: until the reader picks, the window is
+    /// showing whatever the OS is, and a click has to take them off that in
+    /// the direction they can see.
+    fn toggle_appearance(&mut self, cx: &mut Context<Self>) {
+        self.settings.appearance = Some(match Tokens::global(cx).appearance {
+            ThemeAppearance::Dark => Appearance::Light,
+            ThemeAppearance::Light => Appearance::Dark,
+        });
         self.persist();
-        let appearance = self.settings.appearance;
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.set_appearance(appearance, cx));
-        // The theme needs the window's appearance to resolve `System`, and
-        // a subscription callback has no window; the next frame does.
+        // Installing a theme needs a window, and a subscription callback has
+        // none; the next frame does.
         self.retheme = true;
         cx.notify();
     }
 
     /// Install the theme the setting and the OS agree on, and redraw
     /// everything: the tokens are a global, so every view has to look again.
+    ///
+    /// Never call this while the window is drawing. The redraw is what makes
+    /// the change whole, and it is dropped mid-draw.
     fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mode = Mode::resolve(self.settings.appearance, window.appearance());
         e1_ui::theme::apply(mode, cx);
@@ -916,7 +922,18 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.retheme {
             self.retheme = false;
-            self.apply_theme(window, cx);
+            // Not here: `Window::refresh` does nothing while the window is
+            // drawing, and this is the middle of a draw. Installing the
+            // theme without it leaves the frame half switched — whatever
+            // renders after this line takes the new colours and everything
+            // already drawn, the window's own background included, keeps the
+            // old ones until something else happens to invalidate it. A
+            // deferred call runs once this frame is over, where the refresh
+            // lands.
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.apply_theme(window, cx));
+            });
         }
         let tokens = Tokens::global(cx).clone();
         let standard = tokens.duration_ms.standard();

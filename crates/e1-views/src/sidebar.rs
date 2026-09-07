@@ -9,7 +9,7 @@ use crate::avatar::avatar;
 use crate::store::{Store, StoreEvent};
 use e1_github::Repo;
 use e1_ui::assets::icon;
-use e1_ui::settings::Appearance;
+use e1_ui::theme::ThemeAppearance;
 use e1_ui::{Focus, Section, Tokens, group_by_owner};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -23,8 +23,8 @@ pub enum SidebarEvent {
     Focus(Focus),
     /// Forget the token and go back to the sign-in screen.
     SignOut,
-    /// Move to the next appearance: dark, light, then the system's.
-    CycleAppearance,
+    /// Flip the window between light and dark.
+    ToggleAppearance,
     /// An owner's repositories were folded away, or shown again.
     OwnerToggled {
         /// Which owner.
@@ -40,8 +40,6 @@ impl EventEmitter<SidebarEvent> for Sidebar {}
 pub struct Sidebar {
     store: Entity<Store>,
     selected: Option<Focus>,
-    /// The appearance the window is set to, for the footer's control.
-    appearance: Appearance,
     /// The owners whose repositories are folded away.
     collapsed: HashSet<String>,
 }
@@ -67,15 +65,8 @@ impl Sidebar {
         Self {
             store,
             selected: None,
-            appearance: Appearance::System,
             collapsed: HashSet::new(),
         }
-    }
-
-    /// Tell the footer's control what the window is set to.
-    pub fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
-        self.appearance = appearance;
-        cx.notify();
     }
 
     /// Fold these owners' repositories away, as the settings remember.
@@ -169,47 +160,6 @@ impl Sidebar {
     /// What is highlighted.
     pub fn selected(&self) -> Option<&Focus> {
         self.selected.as_ref()
-    }
-
-    /// Whose GitHub this is: their picture and their login.
-    ///
-    /// The app's own name is not here. A window's title is the thing it is
-    /// showing, and the person whose inbox this is says more than "e1" would.
-    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let tokens = Tokens::global(cx);
-        let viewer = self.store.read(cx).viewer().value().cloned();
-        let picture = viewer
-            .as_ref()
-            .and_then(|viewer| self.store.read(cx).avatar(&viewer.avatar_url));
-        let login: SharedString = viewer
-            .as_ref()
-            .map(|viewer| viewer.login.clone().into())
-            .unwrap_or_else(|| rust_i18n::t!("app.signed_out").to_string().into());
-        let picture = avatar(
-            picture,
-            viewer.as_ref().map(|v| v.login.as_str()).unwrap_or("?"),
-            px(20.),
-            cx,
-        );
-        h_flex()
-            .w_full()
-            .px_3()
-            .py_2p5()
-            .gap_2()
-            .items_center()
-            .child(picture)
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_semibold()
-                    .text_color(if viewer.is_some() {
-                        tokens.colors().text_primary
-                    } else {
-                        tokens.colors().text_muted
-                    })
-                    .truncate()
-                    .child(login),
-            )
     }
 
     /// A small muted label over a run of rows.
@@ -350,10 +300,12 @@ impl Sidebar {
     /// click to move to the next.
     fn appearance_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
-        let (path, tip) = match self.appearance {
-            Appearance::Dark => (icon::MOON, rust_i18n::t!("sidebar.appearance.dark")),
-            Appearance::Light => (icon::SUN, rust_i18n::t!("sidebar.appearance.light")),
-            Appearance::System => (icon::SUN_MOON, rust_i18n::t!("sidebar.appearance.system")),
+        // What is drawn is the theme that is installed, not a copy of the
+        // setting: there may be no setting yet, and the two cannot drift if
+        // only one of them exists.
+        let (path, tip) = match tokens.appearance {
+            ThemeAppearance::Dark => (icon::MOON, rust_i18n::t!("sidebar.appearance.dark")),
+            ThemeAppearance::Light => (icon::SUN, rust_i18n::t!("sidebar.appearance.light")),
         };
         let tip = tip.to_string();
         div()
@@ -369,7 +321,7 @@ impl Sidebar {
                     .size_3p5()
                     .text_color(tokens.colors().text_muted),
             )
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::CycleAppearance)))
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::ToggleAppearance)))
     }
 
     /// Whose window this is.
@@ -472,7 +424,6 @@ impl Render for Sidebar {
             .bg(tokens.colors().bg_sidebar)
             .border_r_1()
             .border_color(tokens.colors().border_subtle)
-            .child(self.header(cx))
             .child(
                 v_flex()
                     .id("sidebar-scroll")
