@@ -148,6 +148,8 @@ pub struct Detail {
     review_input: Entity<TextareaState>,
     /// Empty the line composer at the next frame.
     clear_review: bool,
+    /// A job's log, parsed once when it lands.
+    log_lines: Vec<e1_ui::log::Line>,
 }
 
 impl Detail {
@@ -197,12 +199,13 @@ impl Detail {
             merge_menu: false,
             merge_method: MergeMethod::default(),
             confirm_merge: false,
-            checks_open: false,
+            checks_open: true,
             diff_state: ListState::new(0, ListAlignment::Top, px(300.)),
             split: false,
             composing: None,
             review_input,
             clear_review: false,
+            log_lines: Vec::new(),
         }
     }
 
@@ -396,7 +399,7 @@ impl Detail {
             self.confirm_merge = false;
             self.merge_menu = false;
             self.picker = None;
-            self.checks_open = false;
+            self.checks_open = true;
             self.composing = None;
         }
         self.showing = Some(showing);
@@ -671,17 +674,13 @@ impl Detail {
                 }
             }
             Some(Showing::Log { repo, job, .. }) => {
-                if let Some(text) = self
+                self.log_lines = self
                     .store
                     .read(cx)
                     .log(repo, *job)
                     .and_then(|fetch| fetch.value())
-                {
-                    self.lines = text
-                        .lines()
-                        .map(|line| SharedString::from(line.to_string()))
-                        .collect();
-                }
+                    .map(|text| e1_ui::log::parse(text))
+                    .unwrap_or_default();
             }
             _ => {}
         }
@@ -1174,6 +1173,62 @@ impl Detail {
             .pr_1()
             .text_color(tokens.colors().text_muted)
             .child(value.map(|v| v.to_string()).unwrap_or_default())
+            .into_any_element()
+    }
+
+    /// One line of a job's log: the clock in the gutter, the text coloured
+    /// by what the runner marked it as.
+    fn log_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
+        use e1_ui::log::Kind;
+        let tokens = Tokens::global(cx);
+        let Some(line) = self.log_lines.get(index) else {
+            return div().h(CODE_ROW).into_any_element();
+        };
+        let (color, fill, weight) = match line.kind {
+            Kind::Plain => (tokens.colors().text_secondary, None, false),
+            Kind::Group => (
+                tokens.colors().text_primary,
+                Some(tokens.colors().bg_raised),
+                true,
+            ),
+            Kind::EndGroup => (tokens.colors().text_muted, None, false),
+            Kind::Command => (tokens.colors().accent, None, false),
+            Kind::Error => (
+                tokens.colors().status_error,
+                Some(tokens.colors().status_error.opacity(0.12)),
+                false,
+            ),
+            Kind::Warning => (
+                tokens.colors().status_attention,
+                Some(tokens.colors().status_attention.opacity(0.12)),
+                false,
+            ),
+            Kind::Notice => (tokens.colors().text_muted, None, false),
+        };
+        h_flex()
+            .h(CODE_ROW)
+            .w_full()
+            .px_1()
+            .items_center()
+            .font_family(mono)
+            .text_size(px(11.5))
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .when_some(fill, |this, fill| this.bg(fill))
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_shrink_0()
+                    .pr_3()
+                    .text_color(tokens.colors().text_muted)
+                    .child(line.time.clone().unwrap_or_default()),
+            )
+            .child(
+                div()
+                    .text_color(color)
+                    .when(weight, |this| this.font_medium())
+                    .child(line.text.clone()),
+            )
             .into_any_element()
     }
 
@@ -1823,7 +1878,7 @@ impl Detail {
         let item = &detail.item;
         let open = item.status == e1_github::Status::Open;
         let draft = matches!(item.kind, e1_github::Kind::Pull { draft: true, .. });
-        if !open {
+        if pull.head_sha.is_empty() {
             return None;
         }
         let checks_fetch = self.store.read(cx).checks(&key.0, &pull.head_sha).cloned();
@@ -1955,7 +2010,11 @@ impl Detail {
                                 CheckState::Neutral => (muted, IconName::Minus),
                             };
                             let url = run.html_url.clone();
+                            let opens = run
+                                .actions
+                                .then(|| (key.0.clone(), run.id, run.name.clone()));
                             h_flex()
+                                .id(("check-run", index))
                                 .w_full()
                                 .pl(px(52.))
                                 .pr_4()
@@ -1964,6 +2023,13 @@ impl Detail {
                                 .items_center()
                                 .border_t_1()
                                 .border_color(tokens.colors().border_subtle)
+                                .when_some(opens, |this, (repo, job, name)| {
+                                    this.cursor_pointer()
+                                        .hover(|this| this.bg(tokens.colors().row_hover()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.show_log(repo.clone(), job, name.clone(), cx)
+                                        }))
+                                })
                                 .child(Icon::new(icon).size_3p5().text_color(color))
                                 .child(
                                     div()
@@ -2204,33 +2270,39 @@ impl Detail {
                 .border_1()
                 .border_color(match overall {
                     Some(CheckState::Failure) => red.opacity(0.5),
-                    Some(CheckState::Success) if pull.mergeable == Some(true) => green.opacity(0.5),
+                    Some(CheckState::Success) if !open || pull.mergeable == Some(true) => {
+                        green.opacity(0.5)
+                    }
                     _ => tokens.colors().border_subtle,
                 })
                 .overflow_hidden()
                 .child(checks_row)
                 .children(runs)
-                .child(div().h_px().w_full().bg(tokens.colors().border_subtle))
-                .child(conflicts_row)
-                .child(div().h_px().w_full().bg(tokens.colors().border_subtle))
-                .child(
-                    v_flex()
-                        .w_full()
-                        .px_4()
-                        .py_3()
-                        .gap_2()
+                // A merged or closed pull keeps its checks — the logs are
+                // where a red run is explained — and loses the merge.
+                .when(open, |this| {
+                    this.child(div().h_px().w_full().bg(tokens.colors().border_subtle))
+                        .child(conflicts_row)
+                        .child(div().h_px().w_full().bg(tokens.colors().border_subtle))
                         .child(
-                            h_flex()
-                                .relative()
+                            v_flex()
+                                .w_full()
+                                .px_4()
+                                .py_3()
                                 .gap_2()
-                                .items_center()
-                                .when(!draft, |this| this.child(merge_button))
-                                .children(ready)
-                                .children(cancel)
-                                .children(to_draft),
+                                .child(
+                                    h_flex()
+                                        .relative()
+                                        .gap_2()
+                                        .items_center()
+                                        .when(!draft, |this| this.child(merge_button))
+                                        .children(ready)
+                                        .children(cancel)
+                                        .children(to_draft),
+                                )
+                                .children(menu),
                         )
-                        .children(menu),
-                )
+                })
                 .into_any_element(),
         )
     }
@@ -2615,17 +2687,19 @@ impl Detail {
                     .text_color(tokens.colors().text_muted)
                     .child(repo.to_string())
                     .child(rust_i18n::t!("log.title", id = job).to_string())
-                    .when(!self.lines.is_empty(), |this| {
-                        this.child(rust_i18n::t!("log.lines", count = self.lines.len()).to_string())
+                    .when(!self.log_lines.is_empty(), |this| {
+                        this.child(
+                            rust_i18n::t!("log.lines", count = self.log_lines.len()).to_string(),
+                        )
                     }),
             );
         let body: AnyElement = match (text, error) {
             (Some(_), _) => {
                 let this = cx.entity();
-                uniform_list("log", self.lines.len(), move |range, _window, cx| {
+                uniform_list("log", self.log_lines.len(), move |range, _window, cx| {
                     this.update(cx, |this, cx| {
                         range
-                            .map(|index| this.code_row(index, mono.clone(), cx))
+                            .map(|index| this.log_row(index, mono.clone(), cx))
                             .collect()
                     })
                 })
