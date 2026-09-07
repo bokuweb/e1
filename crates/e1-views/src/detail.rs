@@ -2075,13 +2075,14 @@ impl Detail {
                 .gap_1p5()
                 .flex_wrap()
                 .children(labels.iter().map(|label| {
+                    let (fill, text) = label.paint(tokens.appearance);
                     div()
                         .px_2()
                         .py_0p5()
                         .rounded_full()
-                        .bg(label.fill())
+                        .bg(fill)
                         .text_size(px(11.5))
-                        .text_color(label.color)
+                        .text_color(text)
                         .child(label.name.clone())
                 }))
                 .into_any_element()

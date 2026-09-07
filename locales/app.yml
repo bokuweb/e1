@@ -267,8 +267,14 @@ sidebar.appearance.light:
   en: "Light. Click to follow the system."
   ja: "ライト。クリックでシステムに従う"
 sidebar.appearance.system:
-  en: "Following the system. Click for dark."
-  ja: "システムに従う。クリックでダークに"
+  en: "Following the system, which is %{mode} just now. Click for dark."
+  ja: "システムに従う（いまは%{mode}）。クリックでダークに"
+sidebar.appearance.mode_light:
+  en: light
+  ja: ライト
+sidebar.appearance.mode_dark:
+  en: dark
+  ja: ダーク
 
 detail.labels:
   en: Labels

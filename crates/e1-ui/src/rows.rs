@@ -4,7 +4,7 @@
 //! `uniform_list` asks for its visible rows on every scroll, and formatting
 //! a date or parsing a label colour there is work that shows up as jank.
 
-use crate::theme::{Colors, parse_hex};
+use crate::theme::{Colors, ThemeAppearance, parse_hex};
 use crate::time::age;
 use chrono::{DateTime, Utc};
 use e1_github::{CheckState, Item, Notification, RepoId, State, SubjectKind};
@@ -134,10 +134,30 @@ impl LabelChip {
         }
     }
 
-    /// The chip's fill: the colour at 22 % over the glass, the same fraction
-    /// a selected row uses.
-    pub fn fill(&self) -> Hsla {
-        self.color.opacity(0.22)
+    /// The chip's fill and its text, for the theme in force.
+    ///
+    /// A label's colour is chosen by whoever made it, against GitHub's
+    /// background and not ours, so half of them are unreadable if taken as
+    /// written: `enhancement` is a pale cyan that vanishes on a light
+    /// ground, and a deep blue vanishes on a dark one. The hue is what
+    /// carries the meaning, so the hue is kept and the lightness is moved
+    /// until the text reads — which is what GitHub itself does.
+    pub fn paint(&self, appearance: ThemeAppearance) -> (Hsla, Hsla) {
+        let mut fill = self.color;
+        let mut text = self.color;
+        match appearance {
+            ThemeAppearance::Light => {
+                fill.l = 0.88;
+                fill.a = 1.0;
+                text.l = text.l.min(0.32);
+                text.s = text.s.max(0.35);
+            }
+            ThemeAppearance::Dark => {
+                fill = self.color.opacity(0.22);
+                text.l = text.l.max(0.66);
+            }
+        }
+        (fill, text)
     }
 }
 
@@ -382,6 +402,18 @@ mod tests {
         let chip = LabelChip::new("bug", "not-a-colour", gpui::black());
         assert_eq!(chip.name.as_ref(), "bug");
         assert_eq!(chip.color, gpui::black());
-        assert!(LabelChip::new("bug", "d73a4a", gpui::black()).fill().a < 0.3);
+        let bug = LabelChip::new("bug", "d73a4a", gpui::black());
+        let (dark_fill, dark_text) = bug.paint(ThemeAppearance::Dark);
+        assert!(dark_fill.a < 0.3, "a tint over the dark glass");
+        assert!(dark_text.l >= 0.66, "light enough to read on the dark");
+        // A pale label is darkened until it reads on the light theme.
+        let pale = LabelChip::new("enhancement", "a2eeef", gpui::black());
+        let (light_fill, light_text) = pale.paint(ThemeAppearance::Light);
+        assert_eq!(light_fill.a, 1.0);
+        assert!(light_text.l <= 0.32, "dark enough to read on the light");
+        assert!(
+            (light_text.h - light_fill.h).abs() < f32::EPSILON,
+            "same hue"
+        );
     }
 }

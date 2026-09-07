@@ -316,12 +316,13 @@ impl ItemList {
                                             .child(count.to_string())
                                     }))
                                     .children(row.labels.iter().map(|label| {
+                                        let (fill, text) = label.paint(tokens.appearance);
                                         div()
                                             .px_1p5()
                                             .rounded(px(tokens.radius.row))
-                                            .bg(label.fill())
+                                            .bg(fill)
                                             .text_size(px(11.5))
-                                            .text_color(label.color)
+                                            .text_color(text)
                                             .child(label.name.clone())
                                     })),
                             ),

@@ -10,6 +10,7 @@ use crate::store::{Store, StoreEvent};
 use e1_github::Repo;
 use e1_ui::assets::icon;
 use e1_ui::settings::Appearance;
+use e1_ui::theme::ThemeAppearance;
 use e1_ui::{Focus, Section, Tokens, group_by_owner};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -171,47 +172,6 @@ impl Sidebar {
         self.selected.as_ref()
     }
 
-    /// Whose GitHub this is: their picture and their login.
-    ///
-    /// The app's own name is not here. A window's title is the thing it is
-    /// showing, and the person whose inbox this is says more than "e1" would.
-    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let tokens = Tokens::global(cx);
-        let viewer = self.store.read(cx).viewer().value().cloned();
-        let picture = viewer
-            .as_ref()
-            .and_then(|viewer| self.store.read(cx).avatar(&viewer.avatar_url));
-        let login: SharedString = viewer
-            .as_ref()
-            .map(|viewer| viewer.login.clone().into())
-            .unwrap_or_else(|| rust_i18n::t!("app.signed_out").to_string().into());
-        let picture = avatar(
-            picture,
-            viewer.as_ref().map(|v| v.login.as_str()).unwrap_or("?"),
-            px(20.),
-            cx,
-        );
-        h_flex()
-            .w_full()
-            .px_3()
-            .py_2p5()
-            .gap_2()
-            .items_center()
-            .child(picture)
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_semibold()
-                    .text_color(if viewer.is_some() {
-                        tokens.colors().text_primary
-                    } else {
-                        tokens.colors().text_muted
-                    })
-                    .truncate()
-                    .child(login),
-            )
-    }
-
     /// A small muted label over a run of rows.
     fn section_label(&self, label: String, cx: &App) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
@@ -350,10 +310,20 @@ impl Sidebar {
     /// click to move to the next.
     fn appearance_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
+        // Following the system looks like doing nothing when the system
+        // already agrees with the last choice, so the tip says which way it
+        // has been resolved rather than leaving the reader to wonder.
+        let resolved = match tokens.appearance {
+            ThemeAppearance::Light => rust_i18n::t!("sidebar.appearance.mode_light"),
+            ThemeAppearance::Dark => rust_i18n::t!("sidebar.appearance.mode_dark"),
+        };
         let (path, tip) = match self.appearance {
             Appearance::Dark => (icon::MOON, rust_i18n::t!("sidebar.appearance.dark")),
             Appearance::Light => (icon::SUN, rust_i18n::t!("sidebar.appearance.light")),
-            Appearance::System => (icon::SUN_MOON, rust_i18n::t!("sidebar.appearance.system")),
+            Appearance::System => (
+                icon::SUN_MOON,
+                rust_i18n::t!("sidebar.appearance.system", mode = resolved),
+            ),
         };
         let tip = tip.to_string();
         div()
@@ -472,7 +442,6 @@ impl Render for Sidebar {
             .bg(tokens.colors().bg_sidebar)
             .border_r_1()
             .border_color(tokens.colors().border_subtle)
-            .child(self.header(cx))
             .child(
                 v_flex()
                     .id("sidebar-scroll")

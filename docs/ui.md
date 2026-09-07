@@ -47,6 +47,12 @@ Geometry as Ginka's: 44 px header strips, 4 px grid, row radius 9, controls (but
 
 The palette is Ginka's with the saturation eased twice over (backgrounds ×0.72, accent and status ×0.83, text ×0.81): the same hues, a good deal less of them, so a full day in the window does not tire. The sidebar is **frosted**: not a second coat of dark over the window (`bg.sidebar` was `#120D19` at 70 %) but a milky tint — white at 6 % on the dark theme — over a window that now lets the desktop through at 72 %, so the left column reads as etched glass beside the clearer centre.
 
+**The light theme is not the dark one inverted.** Its ground is a cool near-white (`#F7F8FC`) at 95 %, not a violet one, and it is nearly opaque where the dark theme is glass at 72 %: a light window that lets a wallpaper through takes that wallpaper's cast over every surface, and what came through was a purple wash. Its sidebar tint is the mirror of the dark theme's — near-black at 4 % rather than white at 6 % — so the left column sits a shade *back* from the content, which is where a light-theme sidebar belongs. The status colours are GitHub's light set (`#1A7F37`, `#CF222E`, `#9A6700`, `#BF3989`), which are made to be read on white, and the accent deepens to `#6B3FD4` for the same reason.
+
+Two things are derived per theme rather than written in the file, because one number cannot serve both grounds. **Row tints** (`row.hover`, `row.active`) are the accent at 8 %/14 % on the light theme against 14 %/22 % on the dark: a tint reads against a dark ground by adding light, which is gentle, and against a light one by adding colour, which at the same strength is a stain. A **table's head** is black at 5 % on the light theme against 35 % on the dark, since the text over it is black too.
+
+**A label's colour is moved until it reads.** GitHub's label colours are chosen against GitHub's background, so taken as written half of them disappear on ours — `enhancement`'s pale cyan on a light ground, a deep blue on a dark one. The hue carries the meaning and is kept; the lightness is not. On the light theme the chip is the label's hue at 88 % lightness with its text at most 32 %; on the dark theme it is the hue at 22 % alpha with its text at least 66 %.
+
 ### Type
 
 The system UI font, a step under the reference: sidebar rows, list titles and the toolkit's base size 13 px, metadata 11.5 px, the detail body and comments 14 px on a 1.6 line height, code and paths in the mono family at 12 px.
@@ -59,10 +65,10 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 ### 3.2 Sidebar — navigation
 
-- **Header** — the viewer's avatar at 20 px (their initial until it arrives) and their login in bold, or *not signed in* muted. No app name and no logo: a window's title is what it is showing, and the person whose inbox this is says more than the app's name would.
 - **Sections** — four fixed rows, each an icon and a label, with a right-aligned count when it is known (unread for the inbox): Inbox, My pulls, Reviews (review requested), Assigned. Selected = `row.active` fill.
 - **Repositories** — a small muted label, then the repositories grouped under their owner, the way the reference groups chats under a project: an owner heading (chevron, the owner's name muted, a count) that folds its group and remembers that it did, and under it one row per repository, indented, the name alone since the heading already says whose, with a lock glyph when private. Owners are ordered by their most recently pushed repository, and the repositories inside the same way. Picking one lists its pulls; the kind toggle is in the centre strip.
-- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and login, then the appearance control (a moon, a sun, or half of each for *follow the system*; a click moves to the next), and the sign-out mark.
+- **Footer** — the viewer's avatar at 24 px (their initial until it arrives) and their name, then the appearance control, then the sign-out mark. This is the only place the viewer appears: the sidebar carried the same avatar and login at its head too, and one window does not need to say twice whose it is. No app name and no logo anywhere in the column — a window's title is what it is showing, and the person whose inbox this is says more than the app's name would.
+- **The appearance control** — a moon for dark, a sun for light, half of each for *follow the system*; a click moves to the next of the three. Following the system is a deferral, not a third palette, so it can land on the appearance that was already showing and look like it did nothing; its tooltip therefore names which way the system has been resolved (*Following the system, which is light just now*).
 
 ### 3.3 Centre — the list, the finder, or a search
 
