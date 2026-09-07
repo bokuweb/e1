@@ -7,12 +7,13 @@
 use crate::avatar::avatar;
 use crate::store::{ItemKey, Store, StoreEvent};
 use chrono::Utc;
+use e1_github::CheckState;
 use e1_ui::assets::icon;
 use e1_ui::rows::{Glyph, ItemRow};
 use e1_ui::{Focus, Section, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, StyledExt as _, h_flex, v_flex};
+use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 
 /// How tall a row is. Two lines and their air; the same for every row, which
 /// is what lets the list be uniform.
@@ -102,7 +103,12 @@ impl ItemList {
                 .map(|inbox| {
                     inbox
                         .iter()
-                        .map(|notification| ItemRow::from_notification(notification, now))
+                        .map(|notification| {
+                            let check = notification.number.and_then(|number| {
+                                store.status(&(notification.repo.clone(), number))
+                            });
+                            ItemRow::from_notification(notification, now).with_check(check)
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -112,7 +118,10 @@ impl ItemList {
                 .map(|items| {
                     items
                         .iter()
-                        .map(|item| ItemRow::from_item(item, now, muted))
+                        .map(|item| {
+                            let check = store.status(&(item.repo.clone(), item.number));
+                            ItemRow::from_item(item, now, muted).with_check(check)
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -241,6 +250,27 @@ impl ItemList {
                                             .truncate()
                                             .child(row.title.clone()),
                                     )
+                                    .children(row.check.map(|check| {
+                                        // How the checks stand, the way GitHub's
+                                        // list shows it: a mark beside the number.
+                                        let colors = tokens.colors();
+                                        match check {
+                                            CheckState::Success => Icon::new(IconName::Check)
+                                                .size_3()
+                                                .text_color(colors.status_done)
+                                                .into_any_element(),
+                                            CheckState::Failure => Icon::new(IconName::Close)
+                                                .size_3()
+                                                .text_color(colors.status_error)
+                                                .into_any_element(),
+                                            CheckState::Pending => div()
+                                                .size_2()
+                                                .rounded_full()
+                                                .bg(colors.status_attention)
+                                                .into_any_element(),
+                                            CheckState::Neutral => div().into_any_element(),
+                                        }
+                                    }))
                                     .child(
                                         div()
                                             .text_size(px(11.5))
