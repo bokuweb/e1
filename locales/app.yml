@@ -397,3 +397,37 @@ facet.no_match:
 checks.unknown:
   en: Reading the checks…
   ja: チェックを確認中…
+
+diff.unified:
+  en: Unified
+  ja: 統合
+diff.split:
+  en: Split
+  ja: 左右
+diff.comment.placeholder:
+  en: Leave a comment on this line…
+  ja: この行にコメント…
+diff.comment.send:
+  en: Add comment
+  ja: コメントを追加
+diff.outdated:
+  en: "outdated"
+  ja: "古い差分"
+pull.ready:
+  en: Ready for review
+  ja: レビュー可能にする
+pull.still:
+  en: Still in progress?
+  ja: まだ作業中？
+pull.to_draft:
+  en: Convert to draft
+  ja: ドラフトに戻す
+checks.log:
+  en: Log
+  ja: ログ
+log.title:
+  en: "Job #%{id}"
+  ja: "ジョブ #%{id}"
+log.lines:
+  en: "%{count} lines"
+  ja: "%{count} 行"

@@ -14,7 +14,8 @@
 
 use e1_github::{
     Checks, FileContent, GitHub, Item, Label, ListKind, MergeMethod, Notification, Project,
-    ProjectMembership, PullFile, Repo, RepoId, ReviewEvent, Tree, User, Viewer,
+    ProjectMembership, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree, User,
+    Viewer,
 };
 use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
@@ -71,6 +72,10 @@ pub struct Store {
     memberships: HashMap<ItemKey, Fetch<Vec<ProjectMembership>>>,
     /// The checks on each commit, by repository and sha.
     checks: HashMap<(RepoId, String), Fetch<Checks>>,
+    /// The comments on each pull's diff.
+    review_comments: HashMap<ItemKey, Fetch<Vec<ReviewComment>>>,
+    /// Each Actions job's log, by repository and job id.
+    logs: HashMap<(RepoId, u64), Fetch<String>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -98,7 +103,105 @@ impl Store {
             projects: HashMap::new(),
             memberships: HashMap::new(),
             checks: HashMap::new(),
+            review_comments: HashMap::new(),
+            logs: HashMap::new(),
         }
+    }
+
+    /// The comments on a pull's diff, if they have ever been asked for.
+    pub fn review_comments(&self, key: &ItemKey) -> Option<&Fetch<Vec<ReviewComment>>> {
+        self.review_comments.get(key)
+    }
+
+    /// Fetch the comments on a pull's diff.
+    pub fn load_review_comments(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        self.review_comments.entry(key.clone()).or_default().begin();
+        let (repo, number) = key.clone();
+        self.fetch(
+            cx,
+            move |github| github.review_comments(&repo, number),
+            move |this, result, _| {
+                this.review_comments.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch the comments on a pull's diff only if they never have been.
+    pub fn ensure_review_comments(&mut self, key: ItemKey, cx: &mut Context<Self>) {
+        if self.review_comments.get(&key).is_none_or(Fetch::is_idle) {
+            self.load_review_comments(key, cx);
+        }
+    }
+
+    /// A job's log, if it has ever been asked for.
+    pub fn log(&self, repo: &RepoId, job: u64) -> Option<&Fetch<String>> {
+        self.logs.get(&(repo.clone(), job))
+    }
+
+    /// Fetch a job's log.
+    pub fn load_log(&mut self, repo: RepoId, job: u64, cx: &mut Context<Self>) {
+        let key = (repo.clone(), job);
+        self.logs.entry(key.clone()).or_default().begin();
+        self.fetch(
+            cx,
+            move |github| github.job_log(&repo, job),
+            move |this, result, _| {
+                this.logs.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch a job's log only if it never has been.
+    pub fn ensure_log(&mut self, repo: RepoId, job: u64, cx: &mut Context<Self>) {
+        if self
+            .logs
+            .get(&(repo.clone(), job))
+            .is_none_or(Fetch::is_idle)
+        {
+            self.load_log(repo, job, cx);
+        }
+    }
+
+    /// Comment on a line of a pull's diff.
+    #[allow(clippy::too_many_arguments)]
+    pub fn review_comment(
+        &mut self,
+        key: ItemKey,
+        commit: String,
+        path: String,
+        line: u32,
+        side: Side,
+        body: String,
+        cx: &mut Context<Self>,
+    ) {
+        let reload = key.clone();
+        self.act_then(
+            key,
+            move |github, repo, number| {
+                github
+                    .review_comment(repo, number, &commit, &path, line, side, &body)
+                    .map(|_| ())
+            },
+            move |this, cx| this.load_review_comments(reload, cx),
+            cx,
+        );
+    }
+
+    /// Mark the pull a draft, or ready for review.
+    pub fn set_draft(&mut self, key: ItemKey, draft: bool, cx: &mut Context<Self>) {
+        let Some(node_id) = self
+            .details
+            .get(&key)
+            .and_then(Fetch::value)
+            .map(|detail| detail.item.node_id.clone())
+        else {
+            return;
+        };
+        self.act(
+            key,
+            move |github, _, _| github.set_draft(&node_id, draft),
+            cx,
+        );
     }
 
     /// The checks on a commit, if they have ever been asked for.

@@ -319,6 +319,13 @@ pub enum CheckState {
 /// One check run, or one commit status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
+    /// GitHub's id for the run — for an Actions job, the job's id, which is
+    /// what its log is fetched by. Zero for a commit status.
+    #[serde(default)]
+    pub id: u64,
+    /// Whether it is a GitHub Actions job, whose log the API can read.
+    #[serde(default)]
+    pub actions: bool,
     /// The check's name, or the status's context.
     pub name: String,
     /// What it came to.
@@ -436,6 +443,56 @@ pub struct ProjectMembership {
     pub title: String,
     /// The item's id *within* the project, which removing it takes.
     pub item_id: String,
+}
+
+/// Which side of a diff a review comment sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Side {
+    /// The old file: a removed or context line.
+    Left,
+    /// The new file: an added or context line.
+    Right,
+}
+
+impl Side {
+    /// The value GitHub's `side` field takes.
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Left => "LEFT",
+            Self::Right => "RIGHT",
+        }
+    }
+
+    /// Map GitHub's `side`.
+    pub fn parse(side: &str) -> Self {
+        if side == "LEFT" {
+            Self::Left
+        } else {
+            Self::Right
+        }
+    }
+}
+
+/// A comment on a line of a pull's diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewComment {
+    /// GitHub's id.
+    pub id: u64,
+    /// The file.
+    pub path: String,
+    /// The line in the current diff, or `None` when the code it was on has
+    /// since changed — "outdated", as GitHub says.
+    pub line: Option<u32>,
+    /// Which side of the diff.
+    pub side: Side,
+    /// Who wrote it.
+    pub author: User,
+    /// When.
+    pub created_at: DateTime<Utc>,
+    /// The markdown.
+    pub body: String,
+    /// Where it lives on the web.
+    pub html_url: String,
 }
 
 /// One entry of an item's timeline.

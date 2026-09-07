@@ -442,6 +442,53 @@ impl GitHub for Rest {
         Ok(Checks { runs: all })
     }
 
+    fn review_comments(&self, repo: &RepoId, number: u64) -> Result<Vec<ReviewComment>> {
+        let path = format!("/repos/{repo}/pulls/{number}/comments?per_page=100");
+        let pages: Vec<WireReviewComment> = self.get_pages(&path)?;
+        Ok(pages.into_iter().map(Into::into).collect())
+    }
+
+    fn review_comment(
+        &self,
+        repo: &RepoId,
+        number: u64,
+        commit: &str,
+        path: &str,
+        line: u32,
+        side: Side,
+        body: &str,
+    ) -> Result<ReviewComment> {
+        let comment: WireReviewComment = self.send(
+            "POST",
+            &format!("/repos/{repo}/pulls/{number}/comments"),
+            serde_json::json!({
+                "body": body,
+                "commit_id": commit,
+                "path": path,
+                "line": line,
+                "side": side.as_api(),
+            }),
+        )?;
+        Ok(comment.into())
+    }
+
+    fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {
+        let query = if draft {
+            r#"mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { id } } }"#
+        } else {
+            r#"mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }"#
+        };
+        self.graphql(query, serde_json::json!({ "id": node_id }))?;
+        Ok(())
+    }
+
+    fn job_log(&self, repo: &RepoId, job_id: u64) -> Result<String> {
+        // GitHub answers with a redirect to the log itself, which ureq
+        // follows; the body is plain text, not JSON.
+        let (text, _) = self.fetch(&format!("/repos/{repo}/actions/jobs/{job_id}/logs"))?;
+        Ok(text)
+    }
+
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
         let mut payload = serde_json::json!({ "event": event.as_api() });
         if !body.trim().is_empty() {

@@ -171,6 +171,36 @@ pub trait GitHub: Send + Sync {
         let _ = (repo, sha);
         Err(Error::Unsupported("read checks"))
     }
+    /// The comments on a pull's diff, oldest first.
+    fn review_comments(&self, repo: &RepoId, number: u64) -> Result<Vec<ReviewComment>> {
+        let _ = (repo, number);
+        Err(Error::Unsupported("read review comments"))
+    }
+    /// Comment on a line of a pull's diff, at the pull's head commit.
+    #[allow(clippy::too_many_arguments)]
+    fn review_comment(
+        &self,
+        repo: &RepoId,
+        number: u64,
+        commit: &str,
+        path: &str,
+        line: u32,
+        side: Side,
+        body: &str,
+    ) -> Result<ReviewComment> {
+        let _ = (repo, number, commit, path, line, side, body);
+        Err(Error::Unsupported("comment on a line"))
+    }
+    /// Mark a pull, by its global id, as a draft or as ready for review.
+    fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {
+        let _ = (node_id, draft);
+        Err(Error::Unsupported("change draft state"))
+    }
+    /// The log of a GitHub Actions job, as plain text.
+    fn job_log(&self, repo: &RepoId, job_id: u64) -> Result<String> {
+        let _ = (repo, job_id);
+        Err(Error::Unsupported("read a job's log"))
+    }
     /// Review a pull: approve it, ask for changes, or only comment.
     fn review(&self, repo: &RepoId, number: u64, event: ReviewEvent, body: &str) -> Result<()> {
         let _ = (repo, number, event, body);
