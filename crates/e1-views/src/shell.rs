@@ -298,7 +298,9 @@ impl Shell {
         self.refocus(Focus::files(repo.clone()), cx);
         if let Some(path) = path {
             self.detail
-                .update(cx, |detail, cx| detail.show_file((repo, path), cx));
+                .update(cx, |detail, cx| detail.show_file((repo, path.clone()), cx));
+            self.browser
+                .update(cx, |browser, cx| browser.reveal(&path, cx));
         }
     }
 

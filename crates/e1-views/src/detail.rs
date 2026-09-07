@@ -179,6 +179,9 @@ pub struct Detail {
     review_input: Entity<TextareaState>,
     /// Empty the line composer at the next frame.
     clear_review: bool,
+    /// The file on screen, parsed for highlighting: `None` when there is
+    /// no grammar for it, or more of it than is worth parsing.
+    code: Option<e1_ui::code::Code>,
     /// A job's log, parsed once when it lands.
     log_lines: Vec<e1_ui::log::Line>,
     /// What was on screen before the log, to go back to.
@@ -268,6 +271,7 @@ impl Detail {
             compose_start: None,
             review_input,
             clear_review: false,
+            code: None,
             log_lines: Vec::new(),
             log_previous: None,
             log_steps: Vec::new(),
@@ -615,6 +619,7 @@ impl Detail {
             self.picker = None;
             self.checks_open = false;
             self.composing = None;
+            self.code = None;
         }
         self.showing = Some(showing);
         self.store
@@ -879,6 +884,7 @@ impl Detail {
                 self.diff_state.reset(self.diff_rows.len());
             }
             Some(Showing::File(key)) => {
+                let path = key.1.clone();
                 if let Some(text) = self
                     .store
                     .read(cx)
@@ -890,6 +896,9 @@ impl Detail {
                         .lines()
                         .map(|line| SharedString::from(line.to_string()))
                         .collect();
+                    // Parsed once, here, rather than per frame: the rows
+                    // ask the parse for their own line as they are drawn.
+                    self.code = e1_ui::code::Code::parse(&path, text);
                 }
             }
             Some(Showing::Log { repo, job, .. }) => {
@@ -1647,6 +1656,13 @@ impl Detail {
         let Some(line) = self.lines.get(index) else {
             return div().h(CODE_ROW).into_any_element();
         };
+        // The parse holds the whole file; a row asks it only about itself,
+        // and a file with no grammar draws in the plain colour.
+        let styles = self
+            .code
+            .as_ref()
+            .map(|code| code.line(index, &e1_ui::code::theme(cx)))
+            .unwrap_or_default();
         h_flex()
             .h(CODE_ROW)
             .w_full()
@@ -1668,7 +1684,7 @@ impl Detail {
             .child(
                 div()
                     .text_color(tokens.colors().text_primary)
-                    .child(line.clone()),
+                    .child(StyledText::new(line.clone()).with_highlights(styles)),
             )
             .into_any_element()
     }
@@ -3060,7 +3076,8 @@ impl Detail {
                         this.child(
                             rust_i18n::t!("file.lines", count = self.lines.len()).to_string(),
                         )
-                    }),
+                    })
+                    .children(self.code.as_ref().map(|code| code.language().to_string())),
             );
 
         let body: AnyElement = match content {

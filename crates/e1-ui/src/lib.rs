@@ -12,6 +12,7 @@
 rust_i18n::i18n!("../../locales", fallback = "en");
 
 pub mod assets;
+pub mod code;
 pub mod diff;
 pub mod fetch;
 pub mod finder;
@@ -26,6 +27,7 @@ pub mod settings;
 pub mod snapshot;
 pub mod theme;
 pub mod time;
+pub mod tree;
 
 pub use assets::Assets;
 pub use fetch::Fetch;
