@@ -17,6 +17,7 @@ pub mod fetch;
 pub mod finder;
 pub mod i18n;
 pub mod layout;
+pub mod log;
 pub mod logging;
 pub mod nav;
 pub mod paths;
