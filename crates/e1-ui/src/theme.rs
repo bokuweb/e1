@@ -364,6 +364,14 @@ pub fn apply(mode: Mode, cx: &mut App) {
     // `Root` and several components paint from the derived semantic tokens
     // rather than from `colors`. Without regenerating them the window keeps
     // the toolkit's opaque default background, which cancels the glass.
+    // The toolkit highlights fenced code in markdown with this, and it is
+    // set once at startup otherwise: without it, a code block in a comment
+    // keeps the light palette all the way through the dark theme.
+    theme.highlight_theme = match mode {
+        Mode::Dark => gpui_component::highlighter::HighlightTheme::default_dark(),
+        Mode::Light => gpui_component::highlighter::HighlightTheme::default_light(),
+    };
+
     theme.tokens = (&theme.colors).into();
     gpui_component::Theme::sync_base(cx);
 }

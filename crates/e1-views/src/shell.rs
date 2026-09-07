@@ -364,6 +364,9 @@ impl Shell {
 
     /// Install the theme the setting and the OS agree on, and redraw
     /// everything: the tokens are a global, so every view has to look again.
+    ///
+    /// Never call this while the window is drawing. The redraw is what makes
+    /// the change whole, and it is dropped mid-draw.
     fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mode = Mode::resolve(self.settings.appearance, window.appearance());
         e1_ui::theme::apply(mode, cx);
@@ -919,7 +922,18 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.retheme {
             self.retheme = false;
-            self.apply_theme(window, cx);
+            // Not here: `Window::refresh` does nothing while the window is
+            // drawing, and this is the middle of a draw. Installing the
+            // theme without it leaves the frame half switched — whatever
+            // renders after this line takes the new colours and everything
+            // already drawn, the window's own background included, keeps the
+            // old ones until something else happens to invalidate it. A
+            // deferred call runs once this frame is over, where the refresh
+            // lands.
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.apply_theme(window, cx));
+            });
         }
         let tokens = Tokens::global(cx).clone();
         let standard = tokens.duration_ms.standard();
