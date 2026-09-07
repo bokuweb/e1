@@ -1,7 +1,7 @@
 # e1 Roadmap
 
 > Status: **M0 and M1 landed; M2 in progress**.
-> Last updated: 2026-09-05
+> Last updated: 2026-09-07
 
 ## 1. Vision
 
@@ -169,6 +169,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 | **M3 Act** | Comment, close, reopen, merge with a method (landed); approve / request changes (landed); labels, assignees and projects edited in place (landed — projects over GraphQL, which needs the `project` scope); the checks and the merge as GitHub's card (landed); draft and ready for review (landed, GraphQL); edit title and body; `⌘K` palette over every action and repository | in progress |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
+| **M6 Ship** | Universal macOS app; Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; installation and Keychain smoke tests (`docs/releasing.md`) | |
 
 ## 6. Quality bars
 
@@ -189,6 +190,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 
 | Date | Decision | Why |
 | --- | --- | --- |
+| 2026-09-07 | The first release is a universal, Developer ID-signed and notarized DMG on GitHub Releases | A one-binary app does not need an installer, while signing, Hardened Runtime, notarization and a stapled ticket give a direct download the normal Gatekeeper path. The exact flow and secret boundary live in `docs/releasing.md`; App Store, Homebrew and Sparkle remain later channels. |
 | 2026-09-05 | Views live in `e1-views`, a library, not in the binary | Embedding (E1). Ginka keeps views in its binary because nothing mounts them; here something will. |
 | 2026-09-05 | The `GitHub` trait is blocking, run on the background executor | A host that owns state behind a socket can implement a blocking call with `block_on`; an async trait would commit both apps to one executor (E2, E3). |
 | 2026-09-05 | `ureq` for HTTP, no tokio | E3. Every async client on crates.io brings tokio; Ginka runs on smol. |
@@ -218,6 +220,10 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 | 2026-09-07 | A list's check marks come from one GraphQL query, not a call per row | REST has no way to ask about many pulls at once, and fifty check-run requests per list is the N+1 the question was about. GraphQL takes fifty aliased `repository { pullRequest { commits(last: 1) { statusCheckRollup } } }` fields in one round trip; the marks land a moment after the rows, from the store's cache, and the rows never wait for them. |
 | 2026-09-07 | Diff lines wrap; nothing is clipped | The split view clipped anything past its half, and a unified line past the column was lost too. The rows are already variable-height, so a long line just makes its row taller. |
 | 2026-09-07 | A review comment can cover a range of lines | Clicking a line comments on that line; ⇧-clicking a second line on the same file and side stretches it to the lines between, and the API's `start_line`/`start_side` carry the range. GitHub's own shape, with a modifier instead of a drag handle. |
+| 2026-09-07 | The files column is a tree, with the finder behind the search box | A flat list of every path is a finder, not a file browser: it answers "where is X" and not "what is in here". The tree is folded from the file paths rather than from GitHub's directory entries, so a folder that holds nothing cannot appear, and the flat matches come back the moment anything is typed. |
+| 2026-09-07 | Highlighting is the toolkit's tree-sitter, not our own | `gpui-component` already ships the grammars and Zed's highlight queries for thirty-odd languages behind its `tree-sitter-languages` feature, which its own code editor uses. Linking that is one line in `Cargo.toml`; vendoring grammars and query files here would be a second copy to keep current for no gain. `e1_ui::code` owns only the path-to-language map and the per-line slicing. |
+| 2026-09-07 | The parse is kept and the styles are not | A file is parsed once when it lands, and each row asks the parse for its own line as it is drawn. Resolving every line's styles up front would build vectors nobody scrolls to, and would have to be thrown away and rebuilt when the reader switches between light and dark. |
+| 2026-09-07 | `cc` is pinned back to 1.2 | The grammars' build scripts want `cc ~1.2`, and the lock carried 1.4 from `embed-resource` through `gpui`, which cannot be two versions at once. 1.2.67 satisfies both. This does not touch the `gpui`/`gpui-component` revs that rule 4 pins to Ginka's. |
 | 2026-09-06 | The editable parts borrow GitHub's shapes | A reader who knows GitHub's gear-and-filter picker and its three-band merge card is not asked to learn ours. The first attempt (chips under a row, a *Merge now?* toggle) was smaller and read as a puzzle. Where GitHub's shape is a popover, ours opens in place under the heading: the panel is narrow and a popover over it would cover what it edits. |
 | 2026-09-06 | Projects go over GraphQL; everything else stays on REST | Projects (v2) have no REST surface. One `graphql` helper carries the four queries; the `ETag` cache does not apply to them, which is fine for a picker. The device-flow scope grows `project`; a `gh` token without it gets GitHub's refusal in the picker rather than a silent empty list. |
 | 2026-09-06 | A divider drag is tracked at the window while it is held | An element's mouse-move listener only hears the pointer while it is the hovered one, and a drag across the centre crosses text fields and scrollbars that claim the pointer. A `canvas` registered for the drag's duration hears every move. |

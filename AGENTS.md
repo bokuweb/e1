@@ -68,7 +68,7 @@ These are load-bearing. Each one exists so that Ginka can mount these views late
 
 ## UI stack
 
-- **Linked:** [`gpui-component`](https://github.com/longbridge/gpui-component) — resizable panels, virtualized lists, markdown, tooltips, inputs.
+- **Linked:** [`gpui-component`](https://github.com/longbridge/gpui-component) — resizable panels, virtualized lists, markdown, tooltips, inputs, and (through its `tree-sitter-languages` feature) the grammars and highlight queries the file view colours code with. That feature compiles some thirty grammars, so the first build after a `cargo clean` is long; nothing else about it is felt.
 - **Reference, not a dependency:** Ginka's own `src/` for how the three-column frameless window is assembled, and `bezel` for the glass theme. Both are read for the mechanism and rebuilt here against our own types; nothing is copied in.
 - Before writing a widget, check `gpui-component`'s gallery for an existing one.
 
