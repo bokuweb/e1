@@ -678,6 +678,7 @@ impl GitHub for Scripted {
         number: u64,
         _commit: &str,
         path: &str,
+        start: Option<u32>,
         line: u32,
         side: Side,
         body: &str,
@@ -692,6 +693,7 @@ impl GitHub for Scripted {
             id: 5000 + data.review_comments.len() as u64,
             path: path.to_string(),
             line: Some(line),
+            start_line: start.filter(|start| *start < line),
             side,
             author: user(&author),
             created_at: Utc::now(),
@@ -701,6 +703,26 @@ impl GitHub for Scripted {
         data.review_comments
             .push(((repo.clone(), number), comment.clone()));
         Ok(comment)
+    }
+
+    fn pull_checks(&self, keys: &[(RepoId, u64)]) -> Result<HashMap<(RepoId, u64), CheckState>> {
+        let heads: Vec<(RepoId, u64, String)> = {
+            let data = self.guard()?;
+            keys.iter()
+                .filter_map(|key| {
+                    data.pulls
+                        .get(key)
+                        .map(|pull| (key.0.clone(), key.1, pull.head.clone()))
+                })
+                .collect()
+        };
+        heads
+            .into_iter()
+            .map(|(repo, number, head)| {
+                self.checks(&repo, &head)
+                    .map(|checks| ((repo, number), checks.overall()))
+            })
+            .collect()
     }
 
     fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {
@@ -1107,7 +1129,16 @@ mod tests {
         let e1 = RepoId::new("bokuweb", "e1");
         assert!(github.review_comments(&e1, 7).unwrap().is_empty());
         let comment = github
-            .review_comment(&e1, 7, "sha", "src/main.rs", 4, Side::Right, "Why here?")
+            .review_comment(
+                &e1,
+                7,
+                "sha",
+                "src/main.rs",
+                None,
+                4,
+                Side::Right,
+                "Why here?",
+            )
             .unwrap();
         assert_eq!(comment.line, Some(4));
         assert_eq!(github.review_comments(&e1, 7).unwrap().len(), 1);
@@ -1121,6 +1152,25 @@ mod tests {
 
         let log = github.job_log(&e1, 1).unwrap();
         assert_eq!(log.lines().count(), 40);
+        let ginka = RepoId::new("bokuweb", "ginka");
+        let statuses = github
+            .pull_checks(&[(e1.clone(), 7), (ginka.clone(), 12), (e1.clone(), 999)])
+            .unwrap();
+        assert!(statuses.contains_key(&(ginka.clone(), 12)));
+        assert!(!statuses.contains_key(&(e1.clone(), 999)));
+        let ranged = github
+            .review_comment(
+                &e1,
+                7,
+                "sha",
+                "src/main.rs",
+                Some(2),
+                4,
+                Side::Right,
+                "these",
+            )
+            .unwrap();
+        assert_eq!(ranged.start_line, Some(2));
         let job = github.job(&e1, 2).unwrap();
         assert_eq!(job.steps.len(), 6);
         assert_eq!(job.steps[3].state, CheckState::Failure);

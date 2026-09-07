@@ -16,6 +16,7 @@ use crate::wire::*;
 use crate::{Error, GitHub, ListKind, Result, StatusFilter};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Where GitHub's API is.
@@ -277,6 +278,16 @@ fn encode_query(query: &str) -> String {
     out
 }
 
+/// GraphQL's `StatusState` as ours.
+fn rollup_state(state: &str) -> CheckState {
+    match state {
+        "SUCCESS" => CheckState::Success,
+        "FAILURE" | "ERROR" => CheckState::Failure,
+        "PENDING" | "EXPECTED" => CheckState::Pending,
+        _ => CheckState::Neutral,
+    }
+}
+
 impl GitHub for Rest {
     fn viewer(&self) -> Result<Viewer> {
         let (user, _): (WireUser, _) = self.get("/user")?;
@@ -454,22 +465,60 @@ impl GitHub for Rest {
         number: u64,
         commit: &str,
         path: &str,
+        start: Option<u32>,
         line: u32,
         side: Side,
         body: &str,
     ) -> Result<ReviewComment> {
+        let mut payload = serde_json::json!({
+            "body": body,
+            "commit_id": commit,
+            "path": path,
+            "line": line,
+            "side": side.as_api(),
+        });
+        if let Some(start) = start.filter(|start| *start < line) {
+            payload["start_line"] = start.into();
+            payload["start_side"] = side.as_api().into();
+        }
         let comment: WireReviewComment = self.send(
             "POST",
             &format!("/repos/{repo}/pulls/{number}/comments"),
-            serde_json::json!({
-                "body": body,
-                "commit_id": commit,
-                "path": path,
-                "line": line,
-                "side": side.as_api(),
-            }),
+            payload,
         )?;
         Ok(comment.into())
+    }
+
+    fn pull_checks(&self, keys: &[(RepoId, u64)]) -> Result<HashMap<(RepoId, u64), CheckState>> {
+        // One GraphQL query per fifty pulls, each pull an aliased field:
+        // the rollup on a head commit is what GitHub's own list shows, and
+        // asking REST would be a round trip per row.
+        let mut answer = HashMap::new();
+        for chunk in keys.chunks(50) {
+            let fields: Vec<String> = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, (repo, number))| {
+                    format!(
+                        "p{index}: repository(owner: {}, name: {}) {{ pullRequest(number: {number}) {{ commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }} }} }}",
+                        serde_json::json!(repo.owner),
+                        serde_json::json!(repo.name),
+                    )
+                })
+                .collect();
+            let query = format!("query {{ {} }}", fields.join(" "));
+            let data = self.graphql(&query, serde_json::json!({}))?;
+            for (index, key) in chunk.iter().enumerate() {
+                let state = data[format!("p{index}")]["pullRequest"]["commits"]["nodes"][0]
+                    ["commit"]["statusCheckRollup"]["state"]
+                    .as_str()
+                    .map(rollup_state);
+                if let Some(state) = state {
+                    answer.insert(key.clone(), state);
+                }
+            }
+        }
+        Ok(answer)
     }
 
     fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {

@@ -15,6 +15,8 @@ mod wire;
 
 pub use auth::{Source, Token};
 pub use cache::HttpCache;
+use std::collections::HashMap;
+
 pub use model::*;
 pub use rest::Rest;
 pub use scripted::Scripted;
@@ -176,7 +178,8 @@ pub trait GitHub: Send + Sync {
         let _ = (repo, number);
         Err(Error::Unsupported("read review comments"))
     }
-    /// Comment on a line of a pull's diff, at the pull's head commit.
+    /// Comment on a line of a pull's diff, at the pull's head commit — or
+    /// on the lines from `start` to `line`, when `start` is given.
     #[allow(clippy::too_many_arguments)]
     fn review_comment(
         &self,
@@ -184,12 +187,20 @@ pub trait GitHub: Send + Sync {
         number: u64,
         commit: &str,
         path: &str,
+        start: Option<u32>,
         line: u32,
         side: Side,
         body: &str,
     ) -> Result<ReviewComment> {
-        let _ = (repo, number, commit, path, line, side, body);
+        let _ = (repo, number, commit, path, start, line, side, body);
         Err(Error::Unsupported("comment on a line"))
+    }
+    /// How the checks stand on each of several pulls, in one round trip:
+    /// what a list shows beside its rows. A pull with no checks is left
+    /// out of the answer.
+    fn pull_checks(&self, keys: &[(RepoId, u64)]) -> Result<HashMap<(RepoId, u64), CheckState>> {
+        let _ = keys;
+        Err(Error::Unsupported("read the checks on a list"))
     }
     /// Mark a pull, by its global id, as a draft or as ready for review.
     fn set_draft(&self, node_id: &str, draft: bool) -> Result<()> {

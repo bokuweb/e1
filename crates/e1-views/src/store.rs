@@ -13,9 +13,9 @@
 //! rather than opening empty and waiting.
 
 use e1_github::{
-    Checks, FileContent, GitHub, Item, Job, Label, ListKind, MergeMethod, Notification, Project,
-    ProjectMembership, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree, User,
-    Viewer,
+    CheckState, Checks, FileContent, GitHub, Item, Job, Label, ListKind, MergeMethod, Notification,
+    Project, ProjectMembership, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree,
+    User, Viewer,
 };
 use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
@@ -78,6 +78,8 @@ pub struct Store {
     logs: HashMap<(RepoId, u64), Fetch<String>>,
     /// Each Actions job's steps, by repository and job id.
     jobs: HashMap<(RepoId, u64), Fetch<Job>>,
+    /// How the checks stand on each pull a list has shown.
+    statuses: HashMap<(RepoId, u64), CheckState>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -108,7 +110,29 @@ impl Store {
             review_comments: HashMap::new(),
             logs: HashMap::new(),
             jobs: HashMap::new(),
+            statuses: HashMap::new(),
         }
+    }
+
+    /// How the checks stand on a pull, once a list has asked.
+    pub fn status(&self, key: &ItemKey) -> Option<CheckState> {
+        self.statuses.get(key).copied()
+    }
+
+    /// Fetch how the checks stand on these pulls, in one round trip.
+    fn load_statuses(&mut self, keys: Vec<ItemKey>, cx: &mut Context<Self>) {
+        if keys.is_empty() {
+            return;
+        }
+        self.fetch(
+            cx,
+            move |github| github.pull_checks(&keys),
+            move |this, result, _| {
+                if let Ok(statuses) = result {
+                    this.statuses.extend(statuses);
+                }
+            },
+        );
     }
 
     /// A job's steps, if they have ever been asked for.
@@ -201,6 +225,7 @@ impl Store {
         key: ItemKey,
         commit: String,
         path: String,
+        start: Option<u32>,
         line: u32,
         side: Side,
         body: String,
@@ -211,7 +236,7 @@ impl Store {
             key,
             move |github, repo, number| {
                 github
-                    .review_comment(repo, number, &commit, &path, line, side, &body)
+                    .review_comment(repo, number, &commit, &path, start, line, side, &body)
                     .map(|_| ())
             },
             move |this, cx| this.load_review_comments(reload, cx),
@@ -749,7 +774,26 @@ impl Store {
         self.fetch(
             cx,
             |github| github.notifications(),
-            |this, result, _| this.inbox.finish(result),
+            |this, result, cx| {
+                let pulls: Vec<ItemKey> = result
+                    .as_deref()
+                    .map(|inbox| {
+                        inbox
+                            .iter()
+                            .filter(|notification| {
+                                notification.kind == e1_github::SubjectKind::PullRequest
+                            })
+                            .filter_map(|notification| {
+                                notification
+                                    .number
+                                    .map(|number| (notification.repo.clone(), number))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                this.inbox.finish(result);
+                this.load_statuses(pulls, cx);
+            },
         );
     }
 
@@ -772,8 +816,19 @@ impl Store {
                 Focus::Repo { repo, kind, status } => github.items(repo, *kind, *status),
                 Focus::Files { .. } => Ok(Vec::new()),
             },
-            move |this, result, _| {
+            move |this, result, cx| {
+                let pulls: Vec<ItemKey> = result
+                    .as_deref()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|item| item.is_pull())
+                            .map(|item| (item.repo.clone(), item.number))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 this.lists.entry(key).or_default().finish(result);
+                this.load_statuses(pulls, cx);
             },
         );
     }
