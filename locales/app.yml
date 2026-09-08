@@ -458,3 +458,39 @@ commit.merge:
 commit.parents:
   en: Parents
   ja: 親コミット
+ask.title:
+  en: Ask an agent
+  ja: エージェントに聞く
+ask.button:
+  en: Ask AI
+  ja: AIに聞く
+ask.placeholder:
+  en: What should it look at?
+  ja: 何を見てほしい？
+ask.none:
+  en: No agent CLI found. Install one and reopen the window.
+  ja: エージェントCLIが見つかりません。インストール後、ウィンドウを開き直してください
+ask.looking:
+  en: Looking for agent CLIs…
+  ja: エージェントCLIを探しています…
+ask.lines:
+  en: "%{count} lines selected"
+  ja: "%{count} 行を選択"
+ask.started:
+  en: "Started %{agent} in Terminal."
+  ja: "%{agent} をターミナルで開始しました"
+ask.failed:
+  en: "Could not start it: %{detail}"
+  ja: "開始できませんでした: %{detail}"
+ask.log_source:
+  en: "From the log of the job \"%{job}\", lines %{from}–%{to}"
+  ja: "ジョブ \"%{job}\" のログ %{from}–%{to} 行目"
+ask.item_source:
+  en: The body of the item
+  ja: 本文
+ask.pick:
+  en: Pick lines to ask about
+  ja: 聞きたい行を選択
+ask.item:
+  en: Ask about this issue or pull request
+  ja: このissue/PRについて聞く

@@ -11,6 +11,7 @@
 // reached yet still renders as words.
 rust_i18n::i18n!("../../locales", fallback = "en");
 
+pub mod agents;
 pub mod assets;
 pub mod code;
 pub mod diff;

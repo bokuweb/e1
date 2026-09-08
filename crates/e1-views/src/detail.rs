@@ -185,6 +185,17 @@ pub struct Detail {
     /// The file on screen, parsed for highlighting: `None` when there is
     /// no grammar for it, or more of it than is worth parsing.
     code: Option<e1_ui::code::Code>,
+    /// The lines of the log the reader has picked out, as row indices.
+    log_selection: Option<(usize, usize)>,
+    /// The ask box, open on what is selected.
+    asking: bool,
+    /// Pick lines and open the box the moment there are lines. A launch
+    /// argument asks for this; a reader picks their own.
+    ask_when_ready: bool,
+    /// What the reader wants asked.
+    ask_input: Entity<InputState>,
+    /// What came of the last ask, to say so.
+    ask_said: Option<String>,
     /// A job's log, parsed once when it lands.
     log_lines: Vec<e1_ui::log::Line>,
     /// What was on screen before the log, to go back to.
@@ -241,11 +252,24 @@ impl Detail {
         })
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx));
+        let ask_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(rust_i18n::t!("ask.placeholder").to_string())
+        });
         let review_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder(rust_i18n::t!("diff.comment.placeholder").to_string())
                 .auto_grow(2, 6)
         });
+        // ⏎ in the ask box sends to the first CLI, which is the one most
+        // people have and the one the list puts at the top.
+        cx.subscribe(&ask_input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. })
+                && let Some(agent) = this.store.read(cx).agents().first().cloned()
+            {
+                this.send_ask(agent, cx);
+            }
+        })
+        .detach();
         cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -275,6 +299,11 @@ impl Detail {
             review_input,
             clear_review: false,
             code: None,
+            log_selection: None,
+            asking: false,
+            ask_when_ready: false,
+            ask_input,
+            ask_said: None,
             log_lines: Vec::new(),
             log_previous: None,
             log_steps: Vec::new(),
@@ -304,6 +333,113 @@ impl Detail {
             store.ensure_log(repo.clone(), job, cx);
             store.ensure_job(repo, job, cx);
         });
+        self.rebuild(cx);
+    }
+
+    /// Pick a line of the log, or stretch the pick to it with ⇧ held.
+    fn pick_log_line(&mut self, index: usize, extend: bool, cx: &mut Context<Self>) {
+        self.log_selection = match (self.log_selection, extend) {
+            (Some((anchor, _)), true) => Some((anchor.min(index), anchor.max(index))),
+            _ => Some((index, index)),
+        };
+        self.ask_said = None;
+        cx.notify();
+    }
+
+    /// Whether a row of the log is inside the pick.
+    fn log_picked(&self, index: usize) -> bool {
+        self.log_selection
+            .is_some_and(|(from, to)| (from..=to).contains(&index))
+    }
+
+    /// Open or close the ask box.
+    fn set_asking(&mut self, asking: bool, cx: &mut Context<Self>) {
+        self.asking = asking;
+        self.ask_said = None;
+        cx.notify();
+    }
+
+    /// What the ask box would send, from what is on screen and picked.
+    fn ask(&self, cx: &App) -> Option<e1_ui::agents::Ask> {
+        let store = self.store.read(cx);
+        let question = self.ask_input.read(cx).value().to_string();
+        match self.showing.as_ref()? {
+            Showing::Item(key) => {
+                let detail = store.detail(key).and_then(|fetch| fetch.value())?;
+                Some(e1_ui::agents::Ask {
+                    repo: Some(key.0.clone()),
+                    subject: format!("#{} {}", detail.item.number, detail.item.title),
+                    url: Some(detail.item.html_url.clone()),
+                    source: (!detail.item.body.trim().is_empty())
+                        .then(|| rust_i18n::t!("ask.item_source").to_string()),
+                    excerpt: Some(detail.item.body.clone()).filter(|body| !body.trim().is_empty()),
+                    question,
+                })
+            }
+            Showing::Log { repo, job, name } => {
+                let (from, to) = self.log_selection?;
+                let excerpt: Vec<String> = self
+                    .log_lines
+                    .get(from..=to.min(self.log_lines.len().saturating_sub(1)))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|line| line.text.clone())
+                    .collect();
+                Some(e1_ui::agents::Ask {
+                    repo: Some(repo.clone()),
+                    subject: rust_i18n::t!("log.title", id = job).to_string(),
+                    url: store
+                        .job(repo, *job)
+                        .and_then(|fetch| fetch.value())
+                        .map(|job| job.html_url.clone()),
+                    source: Some(
+                        rust_i18n::t!(
+                            "ask.log_source",
+                            job = name.clone(),
+                            from = from + 1,
+                            to = to + 1
+                        )
+                        .to_string(),
+                    ),
+                    excerpt: Some(excerpt.join("\n")),
+                    question,
+                })
+            }
+            Showing::File(_) | Showing::Commit { .. } => None,
+        }
+    }
+
+    /// Hand the ask to one of the CLIs and start a session on it.
+    fn send_ask(&mut self, agent: e1_ui::agents::Agent, cx: &mut Context<Self>) {
+        let Some(ask) = self.ask(cx) else {
+            return;
+        };
+        let workdir = ask
+            .repo
+            .as_ref()
+            .and_then(|repo| e1_ui::agents::checkout_in(repo, &e1_ui::agents::checkout_roots()));
+        let directory = e1_ui::Paths::from_env()
+            .map(|paths| paths.root().join("asks"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("e1-asks"));
+        self.ask_said = Some(
+            match e1_ui::agents::start(&agent, &ask, workdir.as_deref(), &directory) {
+                Ok(_) => {
+                    self.asking = false;
+                    rust_i18n::t!("ask.started", agent = agent.kind.label()).to_string()
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not start an agent");
+                    rust_i18n::t!("ask.failed", detail = error.to_string()).to_string()
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    /// Pick a few lines and open the ask box as soon as there are lines to
+    /// pick, for screenshots (`E1_DEMO_ASK=1`).
+    pub fn ask_at_launch(&mut self, cx: &mut Context<Self>) {
+        self.ask_when_ready = true;
         self.rebuild(cx);
     }
 
@@ -975,6 +1111,12 @@ impl Detail {
                         .collect();
                 }
                 self.rebuild_log_rows();
+                if self.ask_when_ready && !self.log_lines.is_empty() {
+                    self.ask_when_ready = false;
+                    let last = self.log_lines.len().saturating_sub(1);
+                    self.log_selection = Some((10.min(last), 12.min(last)));
+                    self.asking = true;
+                }
             }
             _ => {}
         }
@@ -1642,7 +1784,7 @@ impl Detail {
 
     /// One line of a job's log: the clock in the gutter, the text coloured
     /// by what the runner marked it as, wrapping when it is long.
-    fn log_line_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
+    fn log_line_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
         use e1_ui::log::Kind;
         let tokens = Tokens::global(cx);
         let Some(line) = self.log_lines.get(index) else {
@@ -1672,7 +1814,9 @@ impl Detail {
         // Under a step the lines sit in from its heading; without steps
         // they run from the edge.
         let inset = if self.log_steps.is_empty() { 8. } else { 36. };
+        let picked = self.log_picked(index);
         h_flex()
+            .id(("log-line", index))
             .w_full()
             .min_h(CODE_ROW)
             .pl(px(inset))
@@ -1682,6 +1826,14 @@ impl Detail {
             .font_family(mono)
             .text_size(px(11.5))
             .when_some(fill, |this, fill| this.bg(fill))
+            // Picking lines is what the ask box asks about: a click starts
+            // the pick and a ⇧-click stretches it, as it does on the diff.
+            .when(picked, |this| this.bg(tokens.colors().accent.opacity(0.18)))
+            .cursor_pointer()
+            .hover(|this| this.bg(tokens.colors().row_hover()))
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.pick_log_line(index, event.modifiers().shift, cx)
+            }))
             .child(
                 div()
                     .w(px(64.))
@@ -3163,6 +3315,165 @@ impl Detail {
 }
 
 impl Detail {
+    /// The strip that offers the ask, and the box it opens.
+    ///
+    /// It appears where there is something to ask about: lines picked out
+    /// of a log, or an item on screen. The agents come from the store,
+    /// which looked for them once at launch.
+    fn ask_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tokens = Tokens::global(cx).clone();
+        let picked = self.log_selection.map(|(from, to)| to - from + 1);
+        // The strip is there whenever there is something to ask about, so
+        // that the offer is visible before the reader knows to pick lines.
+        // What it says is what would be sent.
+        let (what, ready) = match (&self.showing, picked) {
+            (Some(Showing::Log { .. }), Some(lines)) => {
+                (rust_i18n::t!("ask.lines", count = lines).to_string(), true)
+            }
+            (Some(Showing::Log { .. }), None) => (rust_i18n::t!("ask.pick").to_string(), false),
+            (Some(Showing::Item(_)), _) => (rust_i18n::t!("ask.item").to_string(), true),
+            _ => return None,
+        };
+        let agents: Vec<e1_ui::agents::Agent> = self.store.read(cx).agents().to_vec();
+        let asking = self.asking && ready;
+        let said = self.ask_said.clone();
+        let box_ = asking.then(|| {
+            let rows: Vec<AnyElement> = agents
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, agent)| {
+                    let label = agent.label();
+                    h_flex()
+                        .id(("agent", index))
+                        .w_full()
+                        .px_2()
+                        .py_1p5()
+                        .gap_2()
+                        .items_center()
+                        .rounded(px(tokens.radius.row))
+                        .cursor_pointer()
+                        .hover(|this| this.bg(tokens.colors().row_hover()))
+                        .child(
+                            Icon::new(IconName::SquareTerminal)
+                                .size_3p5()
+                                .text_color(tokens.colors().accent),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.5))
+                                .text_color(tokens.colors().text_primary)
+                                .child(label),
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.send_ask(agent.clone(), cx)),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let empty = rows.is_empty();
+            let card = v_flex()
+                .w(px(320.))
+                .p_2()
+                .gap_1p5()
+                .rounded(px(tokens.radius.panel))
+                .bg(tokens.colors().popover())
+                .border_1()
+                .border_color(tokens.colors().border_strong)
+                .shadow_lg()
+                .child(
+                    div()
+                        .px_1()
+                        .text_size(px(11.))
+                        .text_color(tokens.colors().text_muted)
+                        .child(rust_i18n::t!("ask.title").to_string()),
+                )
+                .child(Input::new(&self.ask_input))
+                .when(empty, |this| {
+                    this.child(
+                        div()
+                            .px_1()
+                            .py_1()
+                            .text_size(px(11.5))
+                            .text_color(tokens.colors().text_muted)
+                            .child(rust_i18n::t!("ask.none").to_string()),
+                    )
+                })
+                .children(rows);
+            div().absolute().bottom(px(34.)).right_0().child(
+                deferred(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card),
+                )
+                .with_priority(2),
+            )
+        });
+        Some(
+            div()
+                .relative()
+                .w_full()
+                .flex_shrink_0()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .px_4()
+                        .py_1p5()
+                        .gap_2()
+                        .items_center()
+                        .border_t_1()
+                        .border_color(tokens.colors().border_subtle)
+                        .bg(tokens.colors().bg_surface)
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(11.5))
+                                .text_color(tokens.colors().text_muted)
+                                .child(said.unwrap_or(what)),
+                        )
+                        .child(
+                            h_flex()
+                                .id("ask")
+                                .px_2()
+                                .py_0p5()
+                                .gap_1()
+                                .items_center()
+                                .rounded(px(tokens.radius.control()))
+                                .bg(if ready {
+                                    tokens.colors().accent.opacity(0.16)
+                                } else {
+                                    tokens.colors().bg_raised
+                                })
+                                .text_size(px(11.5))
+                                .text_color(if ready {
+                                    tokens.colors().accent
+                                } else {
+                                    tokens.colors().text_muted
+                                })
+                                .when(ready, |this| {
+                                    this.cursor_pointer()
+                                        .hover(|this| this.bg(tokens.colors().accent.opacity(0.24)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let open = !this.asking;
+                                            this.set_asking(open, cx)
+                                        }))
+                                })
+                                .child(Icon::new(IconName::Bot).size_3())
+                                .child(rust_i18n::t!("ask.button").to_string()),
+                        ),
+                )
+                .children(box_)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.asking {
+                        this.set_asking(false, cx);
+                    }
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// One commit: what it says, who wrote it, and what it changed.
     fn commit(&self, repo: RepoId, sha: String, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
@@ -3382,6 +3693,11 @@ impl Render for Detail {
             Some(Showing::Log { repo, job, name }) => self.log(repo, job, name, cx),
             Some(Showing::Commit { repo, sha }) => self.commit(repo, sha, cx),
         };
-        v_flex().size_full().child(body)
+        // The ask strip sits under whatever the column is showing, so
+        // there is one of it however the column got here.
+        v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(body))
+            .children(self.ask_bar(cx))
     }
 }

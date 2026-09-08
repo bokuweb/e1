@@ -264,6 +264,9 @@ impl Shell {
             dragging: false,
             _subscriptions: subscriptions,
         };
+        // Which agent CLIs are here does not depend on being signed in, and
+        // the answer takes a second to find, so the looking starts now.
+        this.store.update(cx, |store, cx| store.load_agents(cx));
         if signed_in {
             this.store.update(cx, |store, cx| store.refresh_all(cx));
             // The window opens on the inbox, which is the question a person
@@ -295,6 +298,9 @@ impl Shell {
             }
             if let Some(job) = log {
                 detail.show_log(key.0, job, format!("job {job}"), cx);
+            }
+            if std::env::var_os("E1_DEMO_ASK").is_some() {
+                detail.ask_at_launch(cx);
             }
         });
         if !self.layout.is_open(Panel::RightPanel) {
