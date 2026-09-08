@@ -512,3 +512,6 @@ ask.cancel:
 ask.context:
   en: What goes with it
   ja: 一緒に送る情報
+ask.excerpt_lines:
+  en: "(%{count} lines)"
+  ja: "（%{count} 行）"

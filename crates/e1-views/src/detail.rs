@@ -204,11 +204,14 @@ pub struct Detail {
     ask_soon: bool,
     /// Whether the dialog's one CLI row is folded open into the list.
     agents_open: bool,
+    /// Whether the dialog shows the excerpt. Folded to start: the reader
+    /// picked it out a moment ago and knows what it says.
+    excerpt_open: bool,
     /// Pick lines and open the box the moment there are lines. A launch
     /// argument asks for this; a reader picks their own.
     ask_when_ready: bool,
     /// What the reader wants asked.
-    ask_input: Entity<InputState>,
+    ask_input: Entity<TextareaState>,
     /// What came of the last ask, to say so.
     ask_said: Option<String>,
     /// A job's log, parsed once when it lands.
@@ -268,21 +271,28 @@ impl Detail {
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx));
         let ask_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rust_i18n::t!("ask.placeholder").to_string())
+            TextareaState::new(window, cx)
+                .placeholder(rust_i18n::t!("ask.placeholder").to_string())
+                .auto_grow(3, 10)
         });
         let review_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder(rust_i18n::t!("diff.comment.placeholder").to_string())
                 .auto_grow(2, 6)
         });
-        // ⏎ in the ask box sends to the first CLI, which is the one most
-        // people have and the one the list puts at the top.
+        // ⌘⏎ sends, as it does on a comment; a plain ⏎ is a newline,
+        // because a question worth asking often runs to two lines.
         cx.subscribe_in(
             &ask_input,
             window,
             |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. })
-                    && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
+                if matches!(
+                    event,
+                    InputEvent::PressEnter {
+                        secondary: true,
+                        ..
+                    }
+                ) && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
                 {
                     this.send_ask(agent, cx);
                     window.close_dialog(cx);
@@ -323,6 +333,7 @@ impl Detail {
             picked_text: None,
             ask_soon: false,
             agents_open: false,
+            excerpt_open: false,
             ask_when_ready: false,
             ask_input,
             ask_said: None,
@@ -3475,6 +3486,7 @@ impl Detail {
             return;
         }
         self.agents_open = false;
+        self.excerpt_open = false;
         self.ask_said = None;
         let this = cx.entity();
         let store = self.store.clone();
@@ -3587,6 +3599,8 @@ impl Detail {
                 );
             }
             let excerpt = ask.excerpt.clone().unwrap_or_default();
+            let excerpt_open = this.read(cx).excerpt_open;
+            let this_for_fold = this.clone();
             dialog
                 .w(px(560.))
                 // Opaque: the dialog's own default is the window's glass,
@@ -3597,35 +3611,76 @@ impl Detail {
                     v_flex()
                         .w_full()
                         .gap_3()
-                        .child(Input::new(&input))
+                        .child(
+                            // The toolkit's own field draws a border and a
+                            // focus ring, and the two read as one crooked
+                            // outline over an opaque panel. This is the
+                            // shape the comment composer uses.
+                            div()
+                                .w_full()
+                                .p_1()
+                                .rounded(px(tokens.radius.control() + 2.))
+                                .bg(tokens.colors().bg_surface)
+                                .border_1()
+                                .border_color(tokens.colors().border_strong)
+                                .child(Textarea::new(&input)),
+                        )
                         .when(!excerpt.trim().is_empty(), |this| {
+                            let lines = excerpt.lines().count();
+                            let open = excerpt_open;
+                            let fold = this_for_fold.clone();
                             this.child(
                                 v_flex()
                                     .w_full()
                                     .gap_1()
                                     .child(
-                                        div()
+                                        h_flex()
+                                            .id("ask-excerpt")
+                                            .w_full()
+                                            .gap_1()
+                                            .items_center()
+                                            .cursor_pointer()
                                             .text_size(px(11.))
                                             .text_color(tokens.colors().text_muted)
-                                            .children(ask.source.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .max_h(px(160.))
-                                            .p_2()
-                                            .rounded(px(tokens.radius.control()))
-                                            .bg(tokens.colors().code_bg)
-                                            .font_family(
-                                                gpui_component::Theme::global(cx)
-                                                    .mono_font_family
-                                                    .clone(),
+                                            .child(
+                                                Icon::new(if open {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .size_3(),
                                             )
-                                            .text_size(px(11.))
-                                            .text_color(tokens.colors().text_secondary)
-                                            .overflow_hidden()
-                                            .child(excerpt.clone()),
-                                    ),
+                                            .children(ask.source.clone())
+                                            .child(
+                                                rust_i18n::t!("ask.excerpt_lines", count = lines)
+                                                    .to_string(),
+                                            )
+                                            .on_click(move |_, _, cx| {
+                                                fold.update(cx, |this, cx| {
+                                                    this.excerpt_open = !this.excerpt_open;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    )
+                                    .when(open, |this| {
+                                        this.child(
+                                            div()
+                                                .w_full()
+                                                .max_h(px(200.))
+                                                .p_2()
+                                                .rounded(px(tokens.radius.control()))
+                                                .bg(tokens.colors().code_bg)
+                                                .font_family(
+                                                    gpui_component::Theme::global(cx)
+                                                        .mono_font_family
+                                                        .clone(),
+                                                )
+                                                .text_size(px(11.))
+                                                .text_color(tokens.colors().text_secondary)
+                                                .overflow_hidden()
+                                                .child(excerpt.clone()),
+                                        )
+                                    }),
                             )
                         })
                         .when(!facts.is_empty(), |this| {
