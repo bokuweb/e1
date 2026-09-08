@@ -119,6 +119,11 @@ where
                 half: Half::Bottom,
             });
         }
+        // A lane opened here has nothing above it, so the bend into it is
+        // where its thread starts. A lane that was already running keeps
+        // its own line as well: the bend joins that thread, it does not
+        // replace it.
+        let mut opened: Vec<usize> = Vec::new();
         for parent in parents.iter().skip(1) {
             let existing = lanes
                 .iter()
@@ -128,10 +133,12 @@ where
                 None => match lanes.iter().position(Option::is_none) {
                     Some(free) => {
                         lanes[free] = Some(parent.clone());
+                        opened.push(free);
                         Some(free)
                     }
                     None if lanes.len() < MAX_LANES => {
                         lanes.push(Some(parent.clone()));
+                        opened.push(lanes.len() - 1);
                         Some(lanes.len() - 1)
                     }
                     None => None,
@@ -147,10 +154,7 @@ where
         }
         // Everything else still running crosses the bottom half untouched.
         for (index, waiting) in lanes.iter().enumerate() {
-            let already = segments
-                .iter()
-                .any(|segment| segment.half == Half::Bottom && segment.to == index);
-            if waiting.is_some() && !already {
+            if index != lane && waiting.is_some() && !opened.contains(&index) {
                 segments.push(Segment {
                     from: index,
                     to: index,
@@ -254,6 +258,25 @@ mod tests {
         assert_eq!(halves(&rows[3], Half::Top), [(0, 0), (1, 0)]);
         assert_eq!(halves(&rows[3], Half::Bottom), []);
         assert_eq!(width(&rows), 2);
+    }
+
+    #[test]
+    fn joining_a_lane_that_is_still_running_leaves_its_line_alone() {
+        // A merges s into t; B, further down the trunk, merges the same s
+        // again. The second bend joins a lane that has its own thread, and
+        // cutting that thread is what left lines ending in mid-air.
+        let rows = lay(&[
+            ("a", &["b", "s"]),
+            ("b", &["d", "s"]),
+            ("d", &[]),
+            ("s", &[]),
+        ]);
+        assert_eq!(halves(&rows[0], Half::Bottom), [(0, 0), (0, 1)]);
+        assert_eq!(
+            halves(&rows[1], Half::Bottom),
+            [(0, 0), (0, 1), (1, 1)],
+            "the branch it joins keeps running below the join"
+        );
     }
 
     #[test]

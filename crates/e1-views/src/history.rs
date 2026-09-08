@@ -363,31 +363,42 @@ fn lane_color(lane: usize, colors: &e1_ui::theme::Colors) -> Hsla {
 /// rule to guess and it guesses a blob. At this size a dozen steps is a
 /// curve to any eye.
 ///
-/// A thread that changes lane leaves its lane going down and arrives at the
-/// next going sideways, which is the quarter-round every git viewer draws.
+/// A thread that changes lane is an S that stands vertically at both ends.
+/// It has to: a bend meets a straight run of the same thread at the row's
+/// edge, and it meets the dot at the row's middle, and a curve that arrives
+/// sideways at either of those leaves a hook. Vertical at both ends is also
+/// why the halves either side of a row's edge read as one line.
 fn thread(from: Point<Pixels>, to: Point<Pixels>) -> Path<Pixels> {
     /// How thick a thread is.
     const WIDTH: f32 = 1.4;
     /// How many quads a bend is drawn with.
-    const STEPS: usize = 12;
+    const STEPS: usize = 16;
+    /// How far along the drop the curve holds its lane before crossing.
+    /// Half of it: less and the S is a corner, more and it is a wobble.
+    const HOLD: f32 = 0.5;
 
     let half = px(WIDTH / 2.);
     let straight = from.x == to.x;
     let steps = if straight { 1 } else { STEPS };
-    // The bend is one quadratic curve, with the corner of the two lanes as
-    // its control point: it leaves the first lane vertically and arrives at
-    // the second along the row's edge.
-    let control = point(from.x, to.y);
+    // A cubic, whose two control points sit above and below on the lanes
+    // the thread leaves and joins. That is what makes both ends vertical.
+    let drop = to.y - from.y;
+    let first = point(from.x, from.y + drop * HOLD);
+    let second = point(to.x, to.y - drop * HOLD);
     let at = |t: f32| {
         if straight {
-            return point(from.x, from.y + (to.y - from.y) * t);
+            return point(from.x, from.y + drop * t);
         }
-        let ease = (1. - t) * (1. - t);
-        let middle = 2. * (1. - t) * t;
-        let end = t * t;
+        let rest = 1. - t;
+        let (a, b, c, d) = (
+            rest * rest * rest,
+            3. * rest * rest * t,
+            3. * rest * t * t,
+            t * t * t,
+        );
         point(
-            from.x * ease + control.x * middle + to.x * end,
-            from.y * ease + control.y * middle + to.y * end,
+            from.x * a + first.x * b + second.x * c + to.x * d,
+            from.y * a + first.y * b + second.y * c + to.y * d,
         )
     };
     let mut path = Path::new(point(from.x - half, from.y));
