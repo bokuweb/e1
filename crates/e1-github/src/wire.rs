@@ -333,6 +333,8 @@ impl From<WireCheckRun> for CheckRun {
 pub(crate) struct WireJob {
     pub id: u64,
     #[serde(default)]
+    pub run_id: u64,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub status: String,
@@ -377,6 +379,7 @@ impl From<WireJob> for Job {
     fn from(job: WireJob) -> Self {
         Self {
             id: job.id,
+            run_id: job.run_id,
             name: job.name,
             state: check_state(&job.status, job.conclusion.as_deref()),
             steps: job

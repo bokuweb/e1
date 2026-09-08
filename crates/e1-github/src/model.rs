@@ -481,6 +481,9 @@ impl JobStep {
 pub struct Job {
     /// GitHub's id, which the log is fetched by.
     pub id: u64,
+    /// The workflow run it belongs to. What `gh run view` takes.
+    #[serde(default)]
+    pub run_id: u64,
     /// Its name.
     pub name: String,
     /// What it came to.

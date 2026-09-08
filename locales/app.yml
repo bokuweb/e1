@@ -494,3 +494,6 @@ ask.pick:
 ask.item:
   en: Ask about this issue or pull request
   ja: このissue/PRについて聞く
+ask.to:
+  en: "Ask %{agent}"
+  ja: "%{agent} に聞く"

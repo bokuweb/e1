@@ -55,6 +55,24 @@ impl Kind {
         Kind::Amp,
     ];
 
+    /// The word this kind is stored as, in settings and anywhere else it
+    /// outlives the window.
+    pub fn id(self) -> &'static str {
+        match self {
+            Kind::Claude => "claude",
+            Kind::Codex => "codex",
+            Kind::Cursor => "cursor",
+            Kind::Gemini => "gemini",
+            Kind::OpenCode => "opencode",
+            Kind::Amp => "amp",
+        }
+    }
+
+    /// Read [`Kind::id`] back.
+    pub fn parse(id: &str) -> Option<Self> {
+        Kind::ALL.into_iter().find(|kind| kind.id() == id)
+    }
+
     /// What the picker calls it.
     pub fn label(self) -> &'static str {
         match self {
@@ -313,6 +331,10 @@ pub struct Ask {
     pub excerpt: Option<String>,
     /// What they typed into the box.
     pub question: String,
+    /// What GitHub calls the thing on screen: the numbers and ids an agent
+    /// needs to fetch the rest for itself. Name and value, in the order
+    /// they are worth reading.
+    pub facts: Vec<(String, String)>,
 }
 
 impl Ask {
@@ -335,6 +357,12 @@ impl Ask {
         }
         if let Some(url) = &self.url {
             prompt.push_str(&format!("{url}\n"));
+        }
+        if !self.facts.is_empty() {
+            prompt.push_str("\nContext:\n");
+            for (name, value) in &self.facts {
+                prompt.push_str(&format!("- {name}: {value}\n"));
+            }
         }
         if let Some(excerpt) = &self.excerpt {
             let source = self.source.as_deref().unwrap_or("The part in question");
@@ -380,6 +408,28 @@ pub fn script(agent: &Agent, workdir: Option<&Path>, prompt: &str) -> String {
     script
 }
 
+/// Write the session's script, ready to be run.
+///
+/// Split from [`start`] so that everything up to opening the terminal can
+/// be checked without opening one.
+pub fn write_script(
+    agent: &Agent,
+    ask: &Ask,
+    workdir: Option<&Path>,
+    directory: &Path,
+) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(directory)?;
+    let at = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let path = directory.join(format!("ask-{at}-{}.sh", agent.kind.id()));
+    std::fs::write(&path, script(agent, workdir, &ask.prompt()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(path)
+}
+
 /// Write the session's script and open a terminal on it.
 ///
 /// A terminal, rather than a process this window owns: these CLIs are
@@ -392,18 +442,7 @@ pub fn start(
     workdir: Option<&Path>,
     directory: &Path,
 ) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(directory)?;
-    let at = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let path = directory.join(format!(
-        "ask-{at}-{}.sh",
-        agent.kind.label().replace(' ', "-")
-    ));
-    std::fs::write(&path, script(agent, workdir, &ask.prompt()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let path = write_script(agent, ask, workdir, directory)?;
     Command::new("open")
         .arg("-a")
         .arg("Terminal")
@@ -538,9 +577,11 @@ mod tests {
             source: Some("From the log of the job \"test\"".into()),
             excerpt: Some("error[E0425]: cannot find value\n".into()),
             question: "why is this failing?".into(),
+            facts: vec![("pull request".into(), "#12".into())],
         };
         let prompt = ask.prompt();
         assert!(prompt.starts_with("In bokuweb/e1, #12 Group a job's log by its steps.\n"));
+        assert!(prompt.contains("- pull request: #12\n"), "{prompt}");
         assert!(prompt.contains("https://github.com/bokuweb/e1/pull/12"));
         assert!(prompt.contains("```\nerror[E0425]: cannot find value\n```"));
         assert!(prompt.trim_end().ends_with("why is this failing?"));
@@ -585,6 +626,39 @@ mod tests {
         let script = script(&agent, None, "hello");
         assert!(!script.contains("cd "));
         assert!(script.contains("'run' 'hello'"), "{script}");
+    }
+
+    #[test]
+    fn a_written_script_is_runnable_and_carries_the_whole_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let agent = Agent {
+            kind: Kind::Codex,
+            program: PathBuf::from("/usr/local/bin/codex"),
+            version: Some("0.142.5".into()),
+        };
+        let ask = Ask {
+            repo: RepoId::parse("bokuweb/e1"),
+            subject: "the log of the job \"test\"".into(),
+            excerpt: Some("test result: FAILED".into()),
+            question: "why?".into(),
+            facts: vec![
+                ("workflow run".into(), "912".into()),
+                ("job".into(), "test (2)".into()),
+            ],
+            ..Ask::default()
+        };
+        let path = write_script(&agent, &ask, None, directory.path()).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("test result: FAILED"));
+        assert!(written.contains("- workflow run: 912"));
+        assert!(written.contains("- job: test (2)"));
+        assert!(written.contains("why?"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert!(mode & 0o100 != 0, "the script has to be runnable");
+        }
     }
 
     #[test]

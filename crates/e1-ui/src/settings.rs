@@ -16,6 +16,10 @@ pub struct AppSettings {
     /// window takes the OS's answer and follows it.
     #[serde(deserialize_with = "chosen")]
     pub appearance: Option<Appearance>,
+    /// Which agent CLI an ask goes to, by [`crate::agents::Kind::id`].
+    /// `None` until one is picked, when the first one found is used.
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Whether the navigation column is showing.
     pub sidebar_open: bool,
     /// Its width, kept while it is closed.
@@ -36,6 +40,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             appearance: None,
+            agent: None,
             // The defaults in docs/ui.md §2. Unlike Ginka, the right panel
             // starts open: it is the reading pane, and there is something to
             // read the moment a row is picked.

@@ -66,6 +66,15 @@ enum Tab {
     Files,
 }
 
+/// What the column tells the window about.
+pub enum DetailEvent {
+    /// The reader picked which agent CLI an ask goes to. The window keeps
+    /// it, because the window owns the settings.
+    AgentChosen(e1_ui::agents::Kind),
+}
+
+impl EventEmitter<DetailEvent> for Detail {}
+
 /// What the column is reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Showing {
@@ -264,7 +273,7 @@ impl Detail {
         // people have and the one the list puts at the top.
         cx.subscribe(&ask_input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. })
-                && let Some(agent) = this.store.read(cx).agents().first().cloned()
+                && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
             {
                 this.send_ask(agent, cx);
             }
@@ -366,14 +375,52 @@ impl Detail {
         match self.showing.as_ref()? {
             Showing::Item(key) => {
                 let detail = store.detail(key).and_then(|fetch| fetch.value())?;
+                let item = &detail.item;
+                // The facts are the point of doing this here rather than
+                // leaving the reader to paste a link: what e1 knows — the
+                // owner, the number, the branch, the head commit — is what
+                // an agent needs to read the rest for itself.
+                let mut facts = vec![
+                    ("repository".to_string(), key.0.to_string()),
+                    ("owner".to_string(), key.0.owner.clone()),
+                    (
+                        if item.is_pull() {
+                            "pull request"
+                        } else {
+                            "issue"
+                        }
+                        .to_string(),
+                        format!("#{}", item.number),
+                    ),
+                ];
+                if let Some(pull) = &detail.pull {
+                    facts.push((
+                        "branch".to_string(),
+                        format!("{} \u{2192} {}", pull.head, pull.base),
+                    ));
+                    if !pull.head_sha.is_empty() {
+                        facts.push(("head commit".to_string(), pull.head_sha.clone()));
+                    }
+                }
+                if !item.labels.is_empty() {
+                    facts.push((
+                        "labels".to_string(),
+                        item.labels
+                            .iter()
+                            .map(|label| label.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
+                }
                 Some(e1_ui::agents::Ask {
                     repo: Some(key.0.clone()),
-                    subject: format!("#{} {}", detail.item.number, detail.item.title),
-                    url: Some(detail.item.html_url.clone()),
-                    source: (!detail.item.body.trim().is_empty())
+                    subject: format!("#{} {}", item.number, item.title),
+                    url: Some(item.html_url.clone()),
+                    source: (!item.body.trim().is_empty())
                         .then(|| rust_i18n::t!("ask.item_source").to_string()),
-                    excerpt: Some(detail.item.body.clone()).filter(|body| !body.trim().is_empty()),
+                    excerpt: Some(item.body.clone()).filter(|body| !body.trim().is_empty()),
                     question,
+                    facts,
                 })
             }
             Showing::Log { repo, job, name } => {
@@ -385,13 +432,31 @@ impl Detail {
                     .iter()
                     .map(|line| line.text.clone())
                     .collect();
+                let read = store.job(repo, *job).and_then(|fetch| fetch.value());
+                let mut facts = vec![
+                    ("repository".to_string(), repo.to_string()),
+                    ("owner".to_string(), repo.owner.clone()),
+                    ("job".to_string(), format!("{name} ({job})")),
+                ];
+                if let Some(run) = read.map(|job| job.run_id).filter(|run| *run != 0) {
+                    facts.push(("workflow run".to_string(), run.to_string()));
+                }
+                if let Some(failed) = read.and_then(|job| {
+                    job.steps
+                        .iter()
+                        .find(|step| step.state == CheckState::Failure)
+                }) {
+                    facts.push(("failed step".to_string(), failed.name.clone()));
+                }
+                // A log is almost always opened from a pull, and that pull
+                // is what the reader is actually working on.
+                if let Some(Showing::Item(from)) = &self.log_previous {
+                    facts.push(("opened from".to_string(), format!("#{}", from.1)));
+                }
                 Some(e1_ui::agents::Ask {
                     repo: Some(repo.clone()),
                     subject: rust_i18n::t!("log.title", id = job).to_string(),
-                    url: store
-                        .job(repo, *job)
-                        .and_then(|fetch| fetch.value())
-                        .map(|job| job.html_url.clone()),
+                    url: read.map(|job| job.html_url.clone()),
                     source: Some(
                         rust_i18n::t!(
                             "ask.log_source",
@@ -403,6 +468,7 @@ impl Detail {
                     ),
                     excerpt: Some(excerpt.join("\n")),
                     question,
+                    facts,
                 })
             }
             Showing::File(_) | Showing::Commit { .. } => None,
@@ -414,6 +480,11 @@ impl Detail {
         let Some(ask) = self.ask(cx) else {
             return;
         };
+        // Which one was picked becomes the default: the next ask goes
+        // there without being asked, and the box is where it is changed.
+        self.store
+            .update(cx, |store, cx| store.choose_agent(agent.kind, cx));
+        cx.emit(DetailEvent::AgentChosen(agent.kind));
         let workdir = ask
             .repo
             .as_ref()
@@ -3335,6 +3406,7 @@ impl Detail {
             _ => return None,
         };
         let agents: Vec<e1_ui::agents::Agent> = self.store.read(cx).agents().to_vec();
+        let chosen = self.store.read(cx).chosen_agent().map(|agent| agent.kind);
         let asking = self.asking && ready;
         let said = self.ask_said.clone();
         let box_ = asking.then(|| {
@@ -3344,6 +3416,7 @@ impl Detail {
                 .enumerate()
                 .map(|(index, agent)| {
                     let label = agent.label();
+                    let is_chosen = chosen == Some(agent.kind);
                     h_flex()
                         .id(("agent", index))
                         .w_full()
@@ -3353,6 +3426,7 @@ impl Detail {
                         .items_center()
                         .rounded(px(tokens.radius.row))
                         .cursor_pointer()
+                        .when(is_chosen, |this| this.bg(tokens.colors().row_active()))
                         .hover(|this| this.bg(tokens.colors().row_hover()))
                         .child(
                             Icon::new(IconName::SquareTerminal)
@@ -3366,6 +3440,14 @@ impl Detail {
                                 .text_color(tokens.colors().text_primary)
                                 .child(label),
                         )
+                        // The one an ask goes to unless another is picked.
+                        .when(is_chosen, |this| {
+                            this.child(
+                                Icon::new(IconName::Check)
+                                    .size_3()
+                                    .text_color(tokens.colors().accent),
+                            )
+                        })
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.send_ask(agent.clone(), cx)),
                         )
@@ -3374,9 +3456,14 @@ impl Detail {
                 .collect();
             let empty = rows.is_empty();
             let card = v_flex()
+                .id("ask-card")
                 .w(px(320.))
                 .p_2()
                 .gap_1p5()
+                // The dismiss lives here rather than on the strip: the box
+                // is `deferred`, so it is painted outside the strip's own
+                // bounds and every click inside it read as a click outside.
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.set_asking(false, cx)))
                 .rounded(px(tokens.radius.panel))
                 .bg(tokens.colors().popover())
                 .border_1()
@@ -3461,15 +3548,15 @@ impl Detail {
                                         }))
                                 })
                                 .child(Icon::new(IconName::Bot).size_3())
-                                .child(rust_i18n::t!("ask.button").to_string()),
+                                .child(match chosen {
+                                    Some(kind) if ready => {
+                                        rust_i18n::t!("ask.to", agent = kind.label()).to_string()
+                                    }
+                                    _ => rust_i18n::t!("ask.button").to_string(),
+                                }),
                         ),
                 )
                 .children(box_)
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    if this.asking {
-                        this.set_asking(false, cx);
-                    }
-                }))
                 .into_any_element(),
         )
     }
