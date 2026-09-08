@@ -467,15 +467,6 @@ ask.button:
 ask.placeholder:
   en: What should it look at?
   ja: 何を見てほしい？
-ask.none:
-  en: No agent CLI found. Install one and reopen the window.
-  ja: エージェントCLIが見つかりません。インストール後、ウィンドウを開き直してください
-ask.looking:
-  en: Looking for agent CLIs…
-  ja: エージェントCLIを探しています…
-ask.lines:
-  en: "%{count} lines selected"
-  ja: "%{count} 行を選択"
 ask.started:
   en: "Started %{agent} in Terminal."
   ja: "%{agent} をターミナルで開始しました"
@@ -488,30 +479,21 @@ ask.log_source:
 ask.item_source:
   en: The body of the item
   ja: 本文
-ask.pick:
-  en: Pick lines to ask about
-  ja: 聞きたい行を選択
-ask.item:
-  en: Ask about this issue or pull request
-  ja: このissue/PRについて聞く
 ask.to:
   en: "Ask %{agent}"
   ja: "%{agent} に聞く"
-ask.picked:
-  en: Ask about the selection
-  ja: 選択した部分について聞く
 ask.picked_source:
   en: The part the reader picked out
   ja: 選択された部分
-ask.send:
-  en: Ask
-  ja: 送る
-ask.cancel:
-  en: Cancel
-  ja: キャンセル
 ask.context:
   en: What goes with it
   ja: 一緒に送る情報
 ask.excerpt_lines:
   en: "(%{count} lines)"
   ja: "（%{count} 行）"
+ask.file_source:
+  en: "From %{path}, lines %{from}–%{to}"
+  ja: "%{path} の %{from}–%{to} 行目"
+ask.diff_source:
+  en: "From the diff of %{path}"
+  ja: "%{path} の差分"
