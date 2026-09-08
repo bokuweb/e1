@@ -29,7 +29,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::text::TextView;
-use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
+use gpui_component::{Icon, IconName, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use std::collections::HashSet;
 
 /// A turning spinner for what is still running: the toolkit's, on the
@@ -196,8 +196,12 @@ pub struct Detail {
     code: Option<e1_ui::code::Code>,
     /// The lines of the log the reader has picked out, as row indices.
     log_selection: Option<(usize, usize)>,
-    /// The ask box, open on what is selected.
-    asking: bool,
+    /// Text picked out of what is rendered — a comment, a body — and where
+    /// the pointer let go of it, which is where the offer appears.
+    picked_text: Option<(String, Point<Pixels>)>,
+    /// Open the ask at the next frame, which is the first place with a
+    /// window to open it from.
+    ask_soon: bool,
     /// Pick lines and open the box the moment there are lines. A launch
     /// argument asks for this; a reader picks their own.
     ask_when_ready: bool,
@@ -271,13 +275,18 @@ impl Detail {
         });
         // ⏎ in the ask box sends to the first CLI, which is the one most
         // people have and the one the list puts at the top.
-        cx.subscribe(&ask_input, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. })
-                && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
-            {
-                this.send_ask(agent, cx);
-            }
-        })
+        cx.subscribe_in(
+            &ask_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. })
+                    && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
+                {
+                    this.send_ask(agent, cx);
+                    window.close_dialog(cx);
+                }
+            },
+        )
         .detach();
         cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -309,7 +318,8 @@ impl Detail {
             clear_review: false,
             code: None,
             log_selection: None,
-            asking: false,
+            picked_text: None,
+            ask_soon: false,
             ask_when_ready: false,
             ask_input,
             ask_said: None,
@@ -361,11 +371,69 @@ impl Detail {
             .is_some_and(|(from, to)| (from..=to).contains(&index))
     }
 
-    /// Open or close the ask box.
-    fn set_asking(&mut self, asking: bool, cx: &mut Context<Self>) {
-        self.asking = asking;
-        self.ask_said = None;
-        cx.notify();
+    /// Notice what the reader dragged over.
+    ///
+    /// A pointer let go is the only moment a selection is finished, and the
+    /// toolkit keeps the selection for the whole window rather than per
+    /// view, so this is the one place that has to ask.
+    fn notice_selection(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = gpui_base::TextSelection::selected_text(window, cx);
+        let picked = picked.trim();
+        let now = (!picked.is_empty()).then(|| (picked.to_string(), at));
+        if now.as_ref().map(|(text, _)| text) != self.picked_text.as_ref().map(|(text, _)| text) {
+            self.picked_text = now;
+            self.ask_said = None;
+            cx.notify();
+        }
+    }
+
+    /// The offer that appears where a selection was let go: a chip that
+    /// opens the ask on what was picked.
+    fn picked_offer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (text, at) = self.picked_text.clone()?;
+        let tokens = Tokens::global(cx).clone();
+        let words = text.split_whitespace().count();
+        Some(
+            div()
+                .absolute()
+                .left(at.x - px(24.))
+                .top(at.y + px(8.))
+                .child(
+                    deferred(
+                        anchored()
+                            .position_mode(AnchoredPositionMode::Local)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(
+                                h_flex()
+                                    .id("picked-offer")
+                                    .px_2()
+                                    .py_1()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .rounded(px(tokens.radius.control()))
+                                    .bg(tokens.colors().popover())
+                                    .border_1()
+                                    .border_color(tokens.colors().border_strong)
+                                    .shadow_lg()
+                                    .cursor_pointer()
+                                    .text_size(px(11.5))
+                                    .text_color(tokens.colors().accent)
+                                    .child(Icon::new(IconName::Bot).size_3())
+                                    .child(rust_i18n::t!("ask.button").to_string())
+                                    .child(div().text_color(tokens.colors().text_muted).child(
+                                        rust_i18n::t!("ask.words", count = words).to_string(),
+                                    ))
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.open_ask(window, cx)
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .with_priority(3),
+                )
+                .into_any_element(),
+        )
     }
 
     /// What the ask box would send, from what is on screen and picked.
@@ -412,13 +480,22 @@ impl Detail {
                             .join(", "),
                     ));
                 }
+                // What the reader picked out beats the whole body: they
+                // dragged over the part they meant.
+                let picked = self.picked_text.as_ref().map(|(text, _)| text.clone());
+                let source = match picked {
+                    Some(_) => rust_i18n::t!("ask.picked_source"),
+                    None => rust_i18n::t!("ask.item_source"),
+                };
+                let excerpt = picked
+                    .or_else(|| Some(item.body.clone()))
+                    .filter(|text| !text.trim().is_empty());
                 Some(e1_ui::agents::Ask {
                     repo: Some(key.0.clone()),
                     subject: format!("#{} {}", item.number, item.title),
                     url: Some(item.html_url.clone()),
-                    source: (!item.body.trim().is_empty())
-                        .then(|| rust_i18n::t!("ask.item_source").to_string()),
-                    excerpt: Some(item.body.clone()).filter(|body| !body.trim().is_empty()),
+                    source: excerpt.as_ref().map(|_| source.to_string()),
+                    excerpt,
                     question,
                     facts,
                 })
@@ -495,7 +572,9 @@ impl Detail {
         self.ask_said = Some(
             match e1_ui::agents::start(&agent, &ask, workdir.as_deref(), &directory) {
                 Ok(_) => {
-                    self.asking = false;
+                    // The pick has been asked about; a fresh one starts a
+                    // fresh ask.
+                    self.picked_text = None;
                     rust_i18n::t!("ask.started", agent = agent.kind.label()).to_string()
                 }
                 Err(error) => {
@@ -1186,7 +1265,7 @@ impl Detail {
                     self.ask_when_ready = false;
                     let last = self.log_lines.len().saturating_sub(1);
                     self.log_selection = Some((10.min(last), 12.min(last)));
-                    self.asking = true;
+                    self.ask_soon = true;
                 }
             }
             _ => {}
@@ -3386,39 +3465,60 @@ impl Detail {
 }
 
 impl Detail {
-    /// The strip that offers the ask, and the box it opens.
+    /// Open the ask as a dialog over the window.
     ///
-    /// It appears where there is something to ask about: lines picked out
-    /// of a log, or an item on screen. The agents come from the store,
-    /// which looked for them once at launch.
-    fn ask_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tokens = Tokens::global(cx).clone();
-        let picked = self.log_selection.map(|(from, to)| to - from + 1);
-        // The strip is there whenever there is something to ask about, so
-        // that the offer is visible before the reader knows to pick lines.
-        // What it says is what would be sent.
-        let (what, ready) = match (&self.showing, picked) {
-            (Some(Showing::Log { .. }), Some(lines)) => {
-                (rust_i18n::t!("ask.lines", count = lines).to_string(), true)
-            }
-            (Some(Showing::Log { .. }), None) => (rust_i18n::t!("ask.pick").to_string(), false),
-            (Some(Showing::Item(_)), _) => (rust_i18n::t!("ask.item").to_string(), true),
-            _ => return None,
+    /// A dialog rather than the popover it started as: what is being sent
+    /// is worth showing — the context, the excerpt, which CLI — and a
+    /// panel that closes when the pointer strays is the wrong shape for
+    /// something a reader reads before sending.
+    fn open_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ask) = self.ask(cx) else {
+            return;
         };
-        let agents: Vec<e1_ui::agents::Agent> = self.store.read(cx).agents().to_vec();
-        let chosen = self.store.read(cx).chosen_agent().map(|agent| agent.kind);
-        let asking = self.asking && ready;
-        let said = self.ask_said.clone();
-        let box_ = asking.then(|| {
+        self.ask_said = None;
+        let this = cx.entity();
+        let store = self.store.clone();
+        let input = self.ask_input.clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let tokens = Tokens::global(cx).clone();
+            let agents = store.read(cx).agents().to_vec();
+            let chosen = store.read(cx).chosen_agent().map(|agent| agent.kind);
+            let facts: Vec<AnyElement> = ask
+                .facts
+                .iter()
+                .map(|(name, value)| {
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .text_size(px(11.5))
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .flex_shrink_0()
+                                .text_color(tokens.colors().text_muted)
+                                .child(name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(tokens.colors().text_secondary)
+                                .child(value.clone()),
+                        )
+                        .into_any_element()
+                })
+                .collect();
             let rows: Vec<AnyElement> = agents
                 .iter()
                 .cloned()
                 .enumerate()
                 .map(|(index, agent)| {
+                    let picked = chosen == Some(agent.kind);
                     let label = agent.label();
-                    let is_chosen = chosen == Some(agent.kind);
+                    let this = this.clone();
                     h_flex()
-                        .id(("agent", index))
+                        .id(("dialog-agent", index))
                         .w_full()
                         .px_2()
                         .py_1p5()
@@ -3426,7 +3526,7 @@ impl Detail {
                         .items_center()
                         .rounded(px(tokens.radius.row))
                         .cursor_pointer()
-                        .when(is_chosen, |this| this.bg(tokens.colors().row_active()))
+                        .when(picked, |this| this.bg(tokens.colors().row_active()))
                         .hover(|this| this.bg(tokens.colors().row_hover()))
                         .child(
                             Icon::new(IconName::SquareTerminal)
@@ -3440,123 +3540,171 @@ impl Detail {
                                 .text_color(tokens.colors().text_primary)
                                 .child(label),
                         )
-                        // The one an ask goes to unless another is picked.
-                        .when(is_chosen, |this| {
+                        .when(picked, |this| {
                             this.child(
                                 Icon::new(IconName::Check)
                                     .size_3()
                                     .text_color(tokens.colors().accent),
                             )
                         })
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.send_ask(agent.clone(), cx)),
-                        )
+                        .on_click(move |_, window, cx| {
+                            this.update(cx, |this, cx| this.send_ask(agent.clone(), cx));
+                            window.close_dialog(cx);
+                        })
                         .into_any_element()
                 })
                 .collect();
-            let empty = rows.is_empty();
-            let card = v_flex()
-                .id("ask-card")
-                .w(px(320.))
-                .p_2()
-                .gap_1p5()
-                // The dismiss lives here rather than on the strip: the box
-                // is `deferred`, so it is painted outside the strip's own
-                // bounds and every click inside it read as a click outside.
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.set_asking(false, cx)))
-                .rounded(px(tokens.radius.panel))
-                .bg(tokens.colors().popover())
-                .border_1()
-                .border_color(tokens.colors().border_strong)
-                .shadow_lg()
+            let excerpt = ask.excerpt.clone().unwrap_or_default();
+            dialog
+                .w(px(560.))
+                .title(rust_i18n::t!("ask.title").to_string())
                 .child(
-                    div()
-                        .px_1()
-                        .text_size(px(11.))
-                        .text_color(tokens.colors().text_muted)
-                        .child(rust_i18n::t!("ask.title").to_string()),
-                )
-                .child(Input::new(&self.ask_input))
-                .when(empty, |this| {
-                    this.child(
-                        div()
-                            .px_1()
-                            .py_1()
-                            .text_size(px(11.5))
-                            .text_color(tokens.colors().text_muted)
-                            .child(rust_i18n::t!("ask.none").to_string()),
-                    )
-                })
-                .children(rows);
-            div().absolute().bottom(px(34.)).right_0().child(
-                deferred(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(card),
-                )
-                .with_priority(2),
-            )
-        });
-        Some(
-            div()
-                .relative()
-                .w_full()
-                .flex_shrink_0()
-                .child(
-                    h_flex()
+                    v_flex()
                         .w_full()
-                        .px_4()
-                        .py_1p5()
-                        .gap_2()
-                        .items_center()
-                        .border_t_1()
-                        .border_color(tokens.colors().border_subtle)
-                        .bg(tokens.colors().bg_surface)
+                        .gap_3()
+                        .child(Input::new(&input))
+                        .when(!excerpt.trim().is_empty(), |this| {
+                            this.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .children(ask.source.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .max_h(px(160.))
+                                            .p_2()
+                                            .rounded(px(tokens.radius.control()))
+                                            .bg(tokens.colors().code_bg)
+                                            .font_family(
+                                                gpui_component::Theme::global(cx)
+                                                    .mono_font_family
+                                                    .clone(),
+                                            )
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_secondary)
+                                            .overflow_hidden()
+                                            .child(excerpt.clone()),
+                                    ),
+                            )
+                        })
+                        .when(!facts.is_empty(), |this| {
+                            this.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(rust_i18n::t!("ask.context").to_string()),
+                                    )
+                                    .children(facts),
+                            )
+                        })
                         .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(11.5))
-                                .text_color(tokens.colors().text_muted)
-                                .child(said.unwrap_or(what)),
-                        )
-                        .child(
-                            h_flex()
-                                .id("ask")
-                                .px_2()
-                                .py_0p5()
-                                .gap_1()
-                                .items_center()
-                                .rounded(px(tokens.radius.control()))
-                                .bg(if ready {
-                                    tokens.colors().accent.opacity(0.16)
-                                } else {
-                                    tokens.colors().bg_raised
+                            v_flex()
+                                .w_full()
+                                .gap_0p5()
+                                .when(rows.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(rust_i18n::t!("ask.none").to_string()),
+                                    )
                                 })
-                                .text_size(px(11.5))
-                                .text_color(if ready {
-                                    tokens.colors().accent
-                                } else {
-                                    tokens.colors().text_muted
-                                })
-                                .when(ready, |this| {
-                                    this.cursor_pointer()
-                                        .hover(|this| this.bg(tokens.colors().accent.opacity(0.24)))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            let open = !this.asking;
-                                            this.set_asking(open, cx)
-                                        }))
-                                })
-                                .child(Icon::new(IconName::Bot).size_3())
-                                .child(match chosen {
-                                    Some(kind) if ready => {
-                                        rust_i18n::t!("ask.to", agent = kind.label()).to_string()
-                                    }
-                                    _ => rust_i18n::t!("ask.button").to_string(),
-                                }),
+                                .children(rows),
                         ),
                 )
-                .children(box_)
+        });
+        cx.notify();
+    }
+
+    /// The strip that offers the ask.
+    ///
+    /// It is there whenever there is something to ask about, so that the
+    /// offer is visible before the reader knows to pick anything, and it
+    /// says what would be sent.
+    fn ask_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tokens = Tokens::global(cx).clone();
+        let picked_lines = self.log_selection.map(|(from, to)| to - from + 1);
+        let picked_words = self
+            .picked_text
+            .as_ref()
+            .map(|(text, _)| text.split_whitespace().count());
+        let (what, ready) = match (&self.showing, picked_lines, picked_words) {
+            (Some(Showing::Log { .. }), Some(lines), _) => {
+                (rust_i18n::t!("ask.lines", count = lines).to_string(), true)
+            }
+            (Some(Showing::Log { .. }), None, _) => (rust_i18n::t!("ask.pick").to_string(), false),
+            (Some(Showing::Item(_)), _, Some(words)) => {
+                (rust_i18n::t!("ask.words", count = words).to_string(), true)
+            }
+            (Some(Showing::Item(_)), _, None) => (rust_i18n::t!("ask.item").to_string(), true),
+            _ => return None,
+        };
+        let chosen = self.store.read(cx).chosen_agent().map(|agent| agent.kind);
+        let said = self.ask_said.clone();
+        Some(
+            h_flex()
+                .w_full()
+                .flex_shrink_0()
+                .px_4()
+                .py_1p5()
+                .gap_2()
+                .items_center()
+                .border_t_1()
+                .border_color(tokens.colors().border_subtle)
+                .bg(tokens.colors().bg_surface)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(11.5))
+                        .text_color(tokens.colors().text_muted)
+                        .child(said.unwrap_or(what)),
+                )
+                .child(
+                    h_flex()
+                        .id("ask")
+                        .px_2()
+                        .py_0p5()
+                        .gap_1()
+                        .items_center()
+                        .rounded(px(tokens.radius.control()))
+                        .bg(if ready {
+                            tokens.colors().accent.opacity(0.16)
+                        } else {
+                            tokens.colors().bg_raised
+                        })
+                        .text_size(px(11.5))
+                        .text_color(if ready {
+                            tokens.colors().accent
+                        } else {
+                            tokens.colors().text_muted
+                        })
+                        .when(ready, |this| {
+                            this.cursor_pointer()
+                                .hover(|this| this.bg(tokens.colors().accent.opacity(0.24)))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.open_ask(window, cx)),
+                                )
+                        })
+                        .child(Icon::new(IconName::Bot).size_3())
+                        .child(match chosen {
+                            Some(kind) if ready => {
+                                rust_i18n::t!("ask.to", agent = kind.label()).to_string()
+                            }
+                            _ => rust_i18n::t!("ask.button").to_string(),
+                        }),
+                )
                 .into_any_element(),
         )
     }
@@ -3782,9 +3930,26 @@ impl Render for Detail {
         };
         // The ask strip sits under whatever the column is showing, so
         // there is one of it however the column got here.
+        if self.ask_soon {
+            // Opening a dialog needs a window and this is a draw; the next
+            // frame is where it can be done.
+            self.ask_soon = false;
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.open_ask(window, cx));
+            });
+        }
         v_flex()
+            .relative()
             .size_full()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    this.notice_selection(event.position, window, cx)
+                }),
+            )
             .child(div().flex_1().min_h_0().child(body))
             .children(self.ask_bar(cx))
+            .children(self.picked_offer(cx))
     }
 }

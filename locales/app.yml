@@ -497,3 +497,18 @@ ask.item:
 ask.to:
   en: "Ask %{agent}"
   ja: "%{agent} に聞く"
+ask.words:
+  en: "%{count} words"
+  ja: "%{count} 語"
+ask.picked_source:
+  en: The part the reader picked out
+  ja: 選択された部分
+ask.send:
+  en: Ask
+  ja: 送る
+ask.cancel:
+  en: Cancel
+  ja: キャンセル
+ask.context:
+  en: What goes with it
+  ja: 一緒に送る情報

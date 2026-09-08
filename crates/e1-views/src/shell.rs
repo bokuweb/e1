@@ -1145,5 +1145,8 @@ impl Render for Shell {
                             .children(right_handle)
                     })),
             )
+            // A dialog is not drawn by the toolkit's `Root` on its own: the
+            // window says where the layer goes, and it goes over everything.
+            .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }
