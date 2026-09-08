@@ -8,16 +8,48 @@
 //! is a sha the next row is waiting for — and it is worked out here, once,
 //! away from the window, where it can be tested.
 
-/// Where one commit sits on the rail.
+/// Half of a row: a thread crosses a row in two pieces, because the dot is
+/// in the middle and a thread may bend at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Half {
+    /// From the row's top edge to the dot's line.
+    Top,
+    /// From the dot's line to the row's bottom edge.
+    Bottom,
+}
+
+/// One piece of thread through a row: it enters at `from` and leaves at
+/// `to`, which are the same lane for a thread running straight past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Segment {
+    /// The lane it comes in on.
+    pub from: usize,
+    /// The lane it goes out on.
+    pub to: usize,
+    /// Which half of the row it crosses.
+    pub half: Half,
+}
+
+/// Where one commit sits on the rail, and what runs past it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     /// The lane the dot goes in, counting from the left.
     pub lane: usize,
-    /// Every lane that has a thread through this row, the dot's included.
-    /// A lane in this list is drawn as a vertical line.
-    pub through: Vec<usize>,
     /// Whether this commit has more than one parent.
     pub merge: bool,
+    /// Every piece of thread crossing this row, the ones that bend into
+    /// and out of the dot included.
+    pub segments: Vec<Segment>,
+}
+
+impl Row {
+    /// The lanes with a thread in them somewhere in this row.
+    pub fn lanes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.segments
+            .iter()
+            .flat_map(|segment| [segment.from, segment.to])
+            .chain(std::iter::once(self.lane))
+    }
 }
 
 /// How many lanes the rail is allowed to grow to. A history wide enough to
@@ -28,20 +60,24 @@ pub const MAX_LANES: usize = 6;
 /// Lay a history out on the rail.
 ///
 /// `commits` is the list as GitHub sends it, newest first, each with its
-/// parents. Lanes are claimed as commits appear and freed when nothing is
-/// waiting for them, so a linear history stays in lane zero and a merge
-/// opens exactly one more.
+/// parents. A lane is a sha that some later row is waiting to see: lanes are
+/// claimed as commits appear and freed when nothing is waiting for them, so
+/// a linear history stays in lane zero and a merge opens exactly one more.
+///
+/// What comes back is not "which lanes are busy" but where each thread
+/// enters and leaves the row. That is the difference between a rail of
+/// disconnected sticks and one where a branch visibly leaves its parent and
+/// comes back.
 pub fn lay_out<'a, I>(commits: I) -> Vec<Row>
 where
     I: IntoIterator<Item = (&'a str, &'a [String])>,
 {
-    // Each lane holds the sha it is waiting to see next.
     let mut lanes: Vec<Option<String>> = Vec::new();
     let mut rows = Vec::new();
     for (sha, parents) in commits {
-        // The commit lands in the lane that was waiting for it, or in the
-        // first free one.
-        let lane = lanes
+        // What is running as the row begins, before this commit is placed.
+        let incoming = lanes.clone();
+        let lane = incoming
             .iter()
             .position(|waiting| waiting.as_deref() == Some(sha))
             .or_else(|| lanes.iter().position(Option::is_none))
@@ -49,45 +85,83 @@ where
                 lanes.push(None);
                 lanes.len() - 1
             });
-        if lane >= lanes.len() {
-            lanes.resize(lane + 1, None);
-        }
-        // Any other lane waiting for the same commit has met it here.
-        for (other, waiting) in lanes.iter_mut().enumerate() {
-            if other != lane && waiting.as_deref() == Some(sha) {
-                *waiting = None;
-            }
-        }
-        // The first parent carries this lane on; the rest open their own,
-        // unless another lane is already waiting for them.
-        lanes[lane] = parents.first().cloned();
-        for parent in parents.iter().skip(1) {
-            if lanes
-                .iter()
-                .any(|waiting| waiting.as_deref() == Some(parent.as_str()))
-            {
-                continue;
-            }
-            match lanes.iter().position(Option::is_none) {
-                Some(free) => lanes[free] = Some(parent.clone()),
-                None if lanes.len() < MAX_LANES => lanes.push(Some(parent.clone())),
+        let mut segments = Vec::new();
+        // The top half: everything arriving. A thread waiting for this
+        // commit bends into its dot; the rest run straight past.
+        for (index, waiting) in incoming.iter().enumerate() {
+            match waiting.as_deref() {
+                Some(waited) if waited == sha => segments.push(Segment {
+                    from: index,
+                    to: lane,
+                    half: Half::Top,
+                }),
+                Some(_) => segments.push(Segment {
+                    from: index,
+                    to: index,
+                    half: Half::Top,
+                }),
                 None => {}
             }
         }
-        let mut through: Vec<usize> = lanes
-            .iter()
-            .enumerate()
-            .filter(|(_, waiting)| waiting.is_some())
-            .map(|(index, _)| index)
-            .collect();
-        if !through.contains(&lane) {
-            through.push(lane);
-            through.sort_unstable();
+        // Those threads have met here, so their lanes are free again.
+        for (index, waiting) in lanes.iter_mut().enumerate() {
+            if index != lane && waiting.as_deref() == Some(sha) {
+                *waiting = None;
+            }
+        }
+        // The bottom half: the first parent carries this lane on, and each
+        // further parent leaves for a lane of its own.
+        lanes[lane] = parents.first().cloned();
+        if lanes[lane].is_some() {
+            segments.push(Segment {
+                from: lane,
+                to: lane,
+                half: Half::Bottom,
+            });
+        }
+        for parent in parents.iter().skip(1) {
+            let existing = lanes
+                .iter()
+                .position(|waiting| waiting.as_deref() == Some(parent.as_str()));
+            let taken = match existing {
+                Some(index) => Some(index),
+                None => match lanes.iter().position(Option::is_none) {
+                    Some(free) => {
+                        lanes[free] = Some(parent.clone());
+                        Some(free)
+                    }
+                    None if lanes.len() < MAX_LANES => {
+                        lanes.push(Some(parent.clone()));
+                        Some(lanes.len() - 1)
+                    }
+                    None => None,
+                },
+            };
+            if let Some(index) = taken {
+                segments.push(Segment {
+                    from: lane,
+                    to: index,
+                    half: Half::Bottom,
+                });
+            }
+        }
+        // Everything else still running crosses the bottom half untouched.
+        for (index, waiting) in lanes.iter().enumerate() {
+            let already = segments
+                .iter()
+                .any(|segment| segment.half == Half::Bottom && segment.to == index);
+            if waiting.is_some() && !already {
+                segments.push(Segment {
+                    from: index,
+                    to: index,
+                    half: Half::Bottom,
+                });
+            }
         }
         rows.push(Row {
             lane,
-            through,
             merge: parents.len() > 1,
+            segments,
         });
     }
     rows
@@ -97,7 +171,7 @@ where
 /// to be.
 pub fn width(rows: &[Row]) -> usize {
     rows.iter()
-        .flat_map(|row| row.through.iter().copied().chain(std::iter::once(row.lane)))
+        .flat_map(Row::lanes)
         .max()
         .map(|last| last + 1)
         .unwrap_or(1)
@@ -128,6 +202,17 @@ mod tests {
         )
     }
 
+    fn halves(row: &Row, half: Half) -> Vec<(usize, usize)> {
+        let mut found: Vec<(usize, usize)> = row
+            .segments
+            .iter()
+            .filter(|segment| segment.half == half)
+            .map(|segment| (segment.from, segment.to))
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
     #[test]
     fn a_straight_history_stays_in_one_lane() {
         let rows = lay(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
@@ -136,11 +221,16 @@ mod tests {
             [0, 0, 0]
         );
         assert!(rows.iter().all(|row| !row.merge));
+        // The tip has nothing above it and the root nothing below.
+        assert_eq!(halves(&rows[0], Half::Top), []);
+        assert_eq!(halves(&rows[0], Half::Bottom), [(0, 0)]);
+        assert_eq!(halves(&rows[1], Half::Top), [(0, 0)]);
+        assert_eq!(halves(&rows[2], Half::Bottom), []);
         assert_eq!(width(&rows), 1);
     }
 
     #[test]
-    fn a_merge_opens_a_lane_and_meeting_again_closes_it() {
+    fn a_merge_sends_a_thread_out_and_the_meeting_brings_it_back() {
         // m merges the side branch s back into the trunk t.
         let rows = lay(&[
             ("m", &["t", "s"]),
@@ -150,20 +240,28 @@ mod tests {
         ]);
         assert!(rows[0].merge);
         assert_eq!(rows[0].lane, 0);
-        assert_eq!(rows[0].through, [0, 1], "the side branch runs beside it");
-        assert_eq!(rows[1].lane, 0, "the first parent carries the lane on");
-        assert_eq!(rows[2].lane, 1, "the second parent took the lane beside it");
+        // Out of the merge: one thread carries on, one leaves for lane 1.
+        assert_eq!(halves(&rows[0], Half::Bottom), [(0, 0), (0, 1)]);
+        // The trunk keeps lane 0 and the side branch runs past it.
+        assert_eq!(rows[1].lane, 0);
+        assert_eq!(halves(&rows[1], Half::Top), [(0, 0), (1, 1)]);
         assert_eq!(
-            rows[3].lane, 0,
-            "both met at the base, which is back in one"
+            rows[2].lane, 1,
+            "the side branch is in the lane it left for"
         );
+        // Both wait for the base, and at the base the second lane bends in.
+        assert_eq!(rows[3].lane, 0);
+        assert_eq!(halves(&rows[3], Half::Top), [(0, 0), (1, 0)]);
+        assert_eq!(halves(&rows[3], Half::Bottom), []);
         assert_eq!(width(&rows), 2);
     }
 
     #[test]
-    fn the_last_commit_leaves_nothing_running() {
-        let rows = lay(&[("only", &[])]);
-        assert_eq!(rows[0].through, [0]);
+    fn a_lane_is_reused_once_its_thread_has_ended() {
+        // Two independent tips, the first of which ends immediately.
+        let rows = lay(&[("one", &[]), ("two", &["three"]), ("three", &[])]);
+        assert_eq!(rows[0].lane, 0);
+        assert_eq!(rows[1].lane, 0, "nothing was left running to keep lane 0");
         assert_eq!(width(&rows), 1);
     }
 

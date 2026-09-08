@@ -143,54 +143,75 @@ impl History {
         cx.notify();
     }
 
-    /// The rail beside one row: a line for every lane running through it,
-    /// and the dot in this commit's own lane.
+    /// The rail beside one row.
+    ///
+    /// Painted rather than built out of boxes: a thread that leaves one
+    /// lane for another is a curve, and a curve is a path. Each row draws
+    /// its own two halves, and they meet at the row's edges because both
+    /// sides of that edge are the same lane at the same x.
     fn rail(&self, index: usize, cx: &App) -> AnyElement {
-        let tokens = Tokens::global(cx);
-        let Some(row) = self.rail.get(index) else {
+        let colors = *Tokens::global(cx).colors();
+        let Some(row) = self.rail.get(index).cloned() else {
             return div().w(px(RAIL_MIN)).into_any_element();
         };
-        let width = (self.lanes as f32 * LANE_WIDTH).max(RAIL_MIN);
-        let at = |lane: usize| px(8. + lane as f32 * LANE_WIDTH);
-        let line = tokens.colors().border_strong;
-        let mut rail = div().relative().w(px(width)).h_full().flex_shrink_0();
-        for lane in row
-            .through
-            .iter()
-            .copied()
-            .filter(|lane| *lane < self.lanes)
-        {
-            rail = rail.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(at(lane))
-                    .w_px()
-                    .bg(line),
-            );
-        }
-        if row.lane < self.lanes {
-            // The dot sits on the line, filled for a plain commit and
-            // ringed for a merge, which is what says two lines met here.
-            rail = rail.child(
-                div()
-                    .absolute()
-                    .top(ROW_HEIGHT / 2. - px(4.))
-                    .left(at(row.lane) - px(3.5))
-                    .size(px(8.))
-                    .rounded_full()
-                    .when(row.merge, |this| {
-                        this.border_2().border_color(tokens.colors().accent)
-                    })
-                    .bg(if row.merge {
-                        tokens.colors().bg_window
-                    } else {
-                        tokens.colors().accent
-                    }),
-            );
-        }
-        rail.into_any_element()
+        let lanes = self.lanes;
+        let width = (lanes as f32 * LANE_WIDTH).max(RAIL_MIN);
+        let merge = row.merge;
+        let lane = row.lane;
+        div()
+            .relative()
+            .w(px(width))
+            .h_full()
+            .flex_shrink_0()
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let x = |lane: usize| bounds.origin.x + px(8. + lane as f32 * LANE_WIDTH);
+                        let top = bounds.origin.y;
+                        let middle = bounds.origin.y + bounds.size.height / 2.;
+                        let bottom = bounds.origin.y + bounds.size.height;
+                        for segment in &row.segments {
+                            if segment.from >= lanes || segment.to >= lanes {
+                                continue;
+                            }
+                            let (from_y, to_y) = match segment.half {
+                                graph::Half::Top => (top, middle),
+                                graph::Half::Bottom => (middle, bottom),
+                            };
+                            window.paint_path(
+                                thread(point(x(segment.from), from_y), point(x(segment.to), to_y)),
+                                // A bend belongs to the branch, not to the
+                                // trunk, so it takes the outer lane's colour.
+                                lane_color(segment.from.max(segment.to), &colors),
+                            );
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(lane < lanes, |this| {
+                // The dot sits on the thread, filled for a plain commit and
+                // ringed for a merge, which is what says two lines met here.
+                this.child(
+                    div()
+                        .absolute()
+                        .top(ROW_HEIGHT / 2. - px(4.))
+                        .left(px(8. + lane as f32 * LANE_WIDTH) - px(4.))
+                        .size(px(8.))
+                        .rounded_full()
+                        .when(merge, |this| {
+                            this.border_2().border_color(lane_color(lane, &colors))
+                        })
+                        .bg(if merge {
+                            colors.bg_window
+                        } else {
+                            lane_color(lane, &colors)
+                        }),
+                )
+            })
+            .into_any_element()
     }
 
     fn row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
@@ -313,4 +334,70 @@ impl Render for History {
             )
             .into_any_element()
     }
+}
+
+/// What colour a lane's thread is.
+///
+/// One colour a lane, cycling: the trunk is the accent and the branches
+/// beside it take the status hues, which is how a history says "this line
+/// is not that line" without a legend. The palette is the theme's own, so a
+/// lane cannot arrive at a colour the window does not already use.
+fn lane_color(lane: usize, colors: &e1_ui::theme::Colors) -> Hsla {
+    let palette = [
+        colors.accent,
+        colors.status_done,
+        colors.status_working,
+        colors.status_attention,
+        colors.status_error,
+        colors.text_muted,
+    ];
+    palette[lane % palette.len()]
+}
+
+/// One piece of thread, as a path.
+///
+/// `paint_path` fills; it does not stroke. A line is therefore a ribbon —
+/// the thread and a copy of it a hair to the right — and it is built as a
+/// run of small quads rather than two long curves, because each quad is
+/// convex and fills exactly, while a long curved outline leaves the fill
+/// rule to guess and it guesses a blob. At this size a dozen steps is a
+/// curve to any eye.
+///
+/// A thread that changes lane leaves its lane going down and arrives at the
+/// next going sideways, which is the quarter-round every git viewer draws.
+fn thread(from: Point<Pixels>, to: Point<Pixels>) -> Path<Pixels> {
+    /// How thick a thread is.
+    const WIDTH: f32 = 1.4;
+    /// How many quads a bend is drawn with.
+    const STEPS: usize = 12;
+
+    let half = px(WIDTH / 2.);
+    let straight = from.x == to.x;
+    let steps = if straight { 1 } else { STEPS };
+    // The bend is one quadratic curve, with the corner of the two lanes as
+    // its control point: it leaves the first lane vertically and arrives at
+    // the second along the row's edge.
+    let control = point(from.x, to.y);
+    let at = |t: f32| {
+        if straight {
+            return point(from.x, from.y + (to.y - from.y) * t);
+        }
+        let ease = (1. - t) * (1. - t);
+        let middle = 2. * (1. - t) * t;
+        let end = t * t;
+        point(
+            from.x * ease + control.x * middle + to.x * end,
+            from.y * ease + control.y * middle + to.y * end,
+        )
+    };
+    let mut path = Path::new(point(from.x - half, from.y));
+    for step in 0..steps {
+        let near = at(step as f32 / steps as f32);
+        let far = at((step + 1) as f32 / steps as f32);
+        path.move_to(point(near.x - half, near.y));
+        path.line_to(point(far.x - half, far.y));
+        path.line_to(point(far.x + half, far.y));
+        path.line_to(point(near.x + half, near.y));
+    }
+    path
 }
