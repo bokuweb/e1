@@ -553,6 +553,17 @@ impl GitHub for Rest {
         Ok(())
     }
 
+    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
+        let pages: Vec<WireCommit> =
+            self.get_pages(&format!("/repos/{repo}/commits?per_page={PAGE_SIZE}"))?;
+        Ok(pages.into_iter().map(WireCommit::into_commit).collect())
+    }
+
+    fn commit(&self, repo: &RepoId, sha: &str) -> Result<CommitDetail> {
+        let (commit, _): (WireCommit, _) = self.get(&format!("/repos/{repo}/commits/{sha}"))?;
+        Ok(commit.into())
+    }
+
     fn job(&self, repo: &RepoId, job_id: u64) -> Result<Job> {
         let (job, _): (WireJob, _) = self.get(&format!("/repos/{repo}/actions/jobs/{job_id}"))?;
         Ok(job.into())

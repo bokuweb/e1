@@ -395,6 +395,90 @@ impl From<WireJob> for Job {
     }
 }
 
+/// What `/commits` and `/commits/{sha}` send.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCommit {
+    pub sha: String,
+    pub commit: WireCommitBody,
+    /// The GitHub account, when GitHub matched one; `null` otherwise.
+    #[serde(default)]
+    pub author: Option<WireUser>,
+    #[serde(default)]
+    pub parents: Vec<WireCommitParent>,
+    #[serde(default)]
+    pub html_url: String,
+    /// Only `/commits/{sha}` sends these.
+    #[serde(default)]
+    pub stats: Option<WireCommitStats>,
+    #[serde(default)]
+    pub files: Vec<WirePullFile>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCommitBody {
+    #[serde(default)]
+    pub message: String,
+    pub author: Option<WireCommitAuthor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCommitAuthor {
+    #[serde(default)]
+    pub name: String,
+    pub date: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCommitParent {
+    pub sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireCommitStats {
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+}
+
+impl WireCommit {
+    /// The row's worth of it.
+    pub(crate) fn into_commit(self) -> Commit {
+        let (name, date) = match self.commit.author {
+            Some(author) => (author.name, author.date),
+            None => (String::new(), None),
+        };
+        Commit {
+            sha: self.sha,
+            message: self.commit.message,
+            author_name: name,
+            author: self.author.map(Into::into),
+            authored_at: date.unwrap_or_else(Utc::now),
+            parents: self.parents.into_iter().map(|parent| parent.sha).collect(),
+            html_url: self.html_url,
+        }
+    }
+}
+
+impl From<WireCommit> for CommitDetail {
+    fn from(mut wire: WireCommit) -> Self {
+        let (additions, deletions) = match &wire.stats {
+            Some(stats) => (stats.additions, stats.deletions),
+            None => (0, 0),
+        };
+        let files = std::mem::take(&mut wire.files)
+            .into_iter()
+            .map(PullFile::from)
+            .collect();
+        Self {
+            commit: wire.into_commit(),
+            additions,
+            deletions,
+            files,
+        }
+    }
+}
+
 /// What `/pulls/{n}/comments` sends: a comment on a line of the diff.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireReviewComment {

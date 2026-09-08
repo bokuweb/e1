@@ -16,6 +16,7 @@ pub mod code;
 pub mod diff;
 pub mod fetch;
 pub mod finder;
+pub mod graph;
 pub mod i18n;
 pub mod layout;
 pub mod log;

@@ -738,6 +738,72 @@ impl GitHub for Scripted {
         Ok(())
     }
 
+    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
+        let _guard = self.guard()?;
+        // Full hashes, and parents that name them: the rail is laid out by
+        // matching a parent to a commit, so a short hash here would draw a
+        // history where nothing joins up.
+        const TIP: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+        const MERGE: &str = "b2c3d4e5f60718293a4b5c6d7e8f90123456789a";
+        const TRUNK: &str = "c3d4e5f60718293a4b5c6d7e8f90123456789ab2";
+        const SIDE: &str = "d4e5f60718293a4b5c6d7e8f90123456789ab2c3";
+        const BASE: &str = "e5f60718293a4b5c6d7e8f90123456789ab2c3d4";
+        const ROOT: &str = "f60718293a4b5c6d7e8f90123456789ab2c3d4e5";
+        let at = |days: i64| Utc::now() - chrono::Duration::days(days);
+        let commit = |sha: &str, message: &str, days: i64, parents: &[&str]| Commit {
+            sha: sha.to_string(),
+            message: message.to_string(),
+            author_name: "bokuweb".into(),
+            author: Some(user("bokuweb")),
+            authored_at: at(days),
+            parents: parents.iter().map(|parent| parent.to_string()).collect(),
+            html_url: format!("https://github.com/{repo}/commit/{sha}"),
+        };
+        Ok(vec![
+            commit(
+                TIP,
+                "Group a job's log by its steps\n\nThe steps come from the Actions API.",
+                0,
+                &[MERGE],
+            ),
+            commit(
+                MERGE,
+                "Merge pull request #12 from bokuweb/files-tree",
+                1,
+                &[TRUNK, SIDE],
+            ),
+            commit(TRUNK, "Poll what is still running", 1, &[BASE]),
+            commit(SIDE, "Build the files column as a tree", 2, &[BASE]),
+            commit(BASE, "Rebuild the light theme", 3, &[ROOT]),
+            commit(ROOT, "Start a chat before it has a workspace", 5, &[]),
+        ])
+    }
+
+    fn commit(&self, repo: &RepoId, sha: &str) -> Result<CommitDetail> {
+        let commit = self
+            .commits(repo)?
+            .into_iter()
+            .find(|commit| commit.sha.starts_with(sha) || sha.starts_with(commit.short()))
+            .ok_or(Error::Unsupported("read a commit that is not scripted"))?;
+        let files = vec![PullFile {
+            filename: "src/shell.rs".into(),
+            previous_filename: None,
+            status: FileStatus::Modified,
+            additions: 3,
+            deletions: 1,
+            patch: Some(
+                "@@ -1,4 +1,6 @@\n use gpui::*;\n-fn open(cx: &mut App) {\n+/// Open the window.\n+fn open(cx: &mut App, remembered: Option<Bounds<Pixels>>) {\n+    let bounds = remembered;\n     cx.open_window(bounds, |window, cx| shell(window, cx))\n }"
+                    .into(),
+            ),
+        }];
+        Ok(CommitDetail {
+            commit,
+            additions: 3,
+            deletions: 1,
+            files,
+        })
+    }
+
     fn job(&self, _repo: &RepoId, job_id: u64) -> Result<Job> {
         let _guard = self.guard()?;
         let at = |second: u32| {
@@ -1171,6 +1237,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ranged.start_line, Some(2));
+        let history = github.commits(&ginka).unwrap();
+        assert_eq!(history.len(), 6);
+        assert!(
+            history[1].is_merge(),
+            "the second commit brings two lines together"
+        );
+        assert_eq!(history[0].subject(), "Group a job's log by its steps");
+        assert_eq!(history[0].body(), "The steps come from the Actions API.");
+        assert_eq!(history[0].short().len(), 7);
+        let one = github.commit(&ginka, history[0].short()).unwrap();
+        assert_eq!(one.commit.sha, history[0].sha);
+        assert_eq!(one.files.len(), 1);
         let job = github.job(&e1, 2).unwrap();
         assert_eq!(job.steps.len(), 6);
         assert_eq!(job.steps[3].state, CheckState::Failure);

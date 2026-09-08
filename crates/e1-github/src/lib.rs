@@ -207,6 +207,16 @@ pub trait GitHub: Send + Sync {
         let _ = (node_id, draft);
         Err(Error::Unsupported("change draft state"))
     }
+    /// A repository's commits on its default branch, newest first.
+    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
+        let _ = repo;
+        Err(Error::Unsupported("read a repository's history"))
+    }
+    /// One commit, with the files it touched and their patches.
+    fn commit(&self, repo: &RepoId, sha: &str) -> Result<CommitDetail> {
+        let _ = (repo, sha);
+        Err(Error::Unsupported("read a commit"))
+    }
     /// A GitHub Actions job: its steps and how each went.
     fn job(&self, repo: &RepoId, job_id: u64) -> Result<Job> {
         let _ = (repo, job_id);

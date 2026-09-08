@@ -25,6 +25,7 @@ E1_DEMO=1 cargo run                         # the same window over scripted data
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12:src/shell.rs' cargo run   # …opened on a pull's diff, for screenshots
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12' E1_DEMO_LOG=2 cargo run   # …opened on a job's log, grouped by step
 E1_DEMO=1 E1_DEMO_FILES='bokuweb/e1:src/main.rs' cargo run         # …opened on a repository's finder with a file read
+E1_DEMO=1 E1_DEMO_HISTORY='bokuweb/ginka' cargo run                # …opened on a repository's history
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all

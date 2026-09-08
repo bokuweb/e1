@@ -13,9 +13,9 @@
 //! rather than opening empty and waiting.
 
 use e1_github::{
-    CheckState, Checks, FileContent, GitHub, Item, Job, Label, ListKind, MergeMethod, Notification,
-    Project, ProjectMembership, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree,
-    User, Viewer,
+    CheckState, Checks, Commit, CommitDetail, FileContent, GitHub, Item, Job, Label, ListKind,
+    MergeMethod, Notification, Project, ProjectMembership, PullFile, Repo, RepoId, ReviewComment,
+    ReviewEvent, Side, Tree, User, Viewer,
 };
 use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
@@ -80,6 +80,10 @@ pub struct Store {
     jobs: HashMap<(RepoId, u64), Fetch<Job>>,
     /// How the checks stand on each pull a list has shown.
     statuses: HashMap<(RepoId, u64), CheckState>,
+    /// Each repository's history, once it has been asked for.
+    commits: HashMap<RepoId, Fetch<Vec<Commit>>>,
+    /// Each commit that has been read, by repository and hash.
+    commit_details: HashMap<(RepoId, String), Fetch<CommitDetail>>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -111,6 +115,62 @@ impl Store {
             logs: HashMap::new(),
             jobs: HashMap::new(),
             statuses: HashMap::new(),
+            commits: HashMap::new(),
+            commit_details: HashMap::new(),
+        }
+    }
+
+    /// A repository's history, if it has ever been asked for.
+    pub fn commits(&self, repo: &RepoId) -> Option<&Fetch<Vec<Commit>>> {
+        self.commits.get(repo)
+    }
+
+    /// Fetch a repository's history.
+    pub fn load_commits(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        self.commits.entry(repo.clone()).or_default().begin();
+        let key = repo.clone();
+        self.fetch(
+            cx,
+            move |github| github.commits(&repo),
+            move |this, result, _| {
+                this.commits.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch a repository's history only if it never has been.
+    pub fn ensure_commits(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        if self.commits.get(&repo).is_none_or(Fetch::is_idle) {
+            self.load_commits(repo, cx);
+        }
+    }
+
+    /// One commit with its files, if it has ever been asked for.
+    pub fn commit(&self, repo: &RepoId, sha: &str) -> Option<&Fetch<CommitDetail>> {
+        self.commit_details.get(&(repo.clone(), sha.to_string()))
+    }
+
+    /// Fetch one commit with its files.
+    pub fn load_commit(&mut self, repo: RepoId, sha: String, cx: &mut Context<Self>) {
+        let key = (repo.clone(), sha.clone());
+        self.commit_details.entry(key.clone()).or_default().begin();
+        self.fetch(
+            cx,
+            move |github| github.commit(&repo, &sha),
+            move |this, result, _| {
+                this.commit_details.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
+    /// Fetch one commit only if it never has been.
+    pub fn ensure_commit(&mut self, repo: RepoId, sha: String, cx: &mut Context<Self>) {
+        if self
+            .commit_details
+            .get(&(repo.clone(), sha.clone()))
+            .is_none_or(Fetch::is_idle)
+        {
+            self.load_commit(repo, sha, cx);
         }
     }
 
@@ -814,7 +874,7 @@ impl Store {
                 Focus::Section(section) => github.search(section.query().unwrap_or_default()),
                 Focus::Search { query } => github.search(query),
                 Focus::Repo { repo, kind, status } => github.items(repo, *kind, *status),
-                Focus::Files { .. } => Ok(Vec::new()),
+                Focus::Files { .. } | Focus::History { .. } => Ok(Vec::new()),
             },
             move |this, result, cx| {
                 let pulls: Vec<ItemKey> = result

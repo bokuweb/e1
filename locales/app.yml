@@ -440,3 +440,21 @@ diff.comment.line:
 diff.comment.range:
   en: Lines %{start}–%{end}
   ja: "%{start}–%{end} 行目"
+list.history:
+  en: History
+  ja: 履歴
+history.empty:
+  en: No commits to show.
+  ja: コミットがありません
+history.commits:
+  en: "%{count} commits"
+  ja: "%{count} コミット"
+commit.files:
+  en: "%{count} files"
+  ja: "%{count} ファイル"
+commit.merge:
+  en: Merge
+  ja: マージ
+commit.parents:
+  en: Parents
+  ja: 親コミット
