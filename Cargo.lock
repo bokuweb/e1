@@ -1635,6 +1635,7 @@ dependencies = [
  "e1-github",
  "e1-ui",
  "gpui",
+ "gpui-base",
  "gpui-component",
  "rust-i18n",
  "tracing",

@@ -317,7 +317,10 @@ pub fn apply(mode: Mode, cx: &mut App) {
 
     // A placeholder bar: the row tint, so it reads as the ghost of a row.
     theme.colors.skeleton = tokens.row_hover();
-    theme.colors.popover = tokens.bg_raised;
+    // Opaque, not the raised surface as authored: a dialog or a menu that
+    // floats over text has to hide it, and `bg.raised` lets the glass
+    // through. Our own popovers already use `Colors::popover`.
+    theme.colors.popover = tokens.popover();
     theme.colors.popover_foreground = tokens.text_primary;
     theme.colors.list = tokens.transparent_surface();
     theme.colors.list_hover = tokens.row_hover();

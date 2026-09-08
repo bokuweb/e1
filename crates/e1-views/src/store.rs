@@ -84,6 +84,13 @@ pub struct Store {
     commits: HashMap<RepoId, Fetch<Vec<Commit>>>,
     /// Each commit that has been read, by repository and hash.
     commit_details: HashMap<(RepoId, String), Fetch<CommitDetail>>,
+    /// The coding-agent CLIs on this machine, once they have been looked
+    /// for. Empty until then, and empty is also the answer when there are
+    /// none.
+    agents: Vec<e1_ui::agents::Agent>,
+    /// Which of them an ask goes to. Remembered in the settings, so it
+    /// arrives here from the window rather than being decided here.
+    chosen: Option<e1_ui::agents::Kind>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -117,7 +124,49 @@ impl Store {
             statuses: HashMap::new(),
             commits: HashMap::new(),
             commit_details: HashMap::new(),
+            agents: Vec::new(),
+            chosen: None,
         }
+    }
+
+    /// The CLI an ask goes to: the one that was chosen, if it is still
+    /// installed, and otherwise the first one found.
+    pub fn chosen_agent(&self) -> Option<&e1_ui::agents::Agent> {
+        self.chosen
+            .and_then(|kind| self.agents.iter().find(|agent| agent.kind == kind))
+            .or_else(|| self.agents.first())
+    }
+
+    /// Remember which CLI an ask goes to.
+    pub fn choose_agent(&mut self, kind: e1_ui::agents::Kind, cx: &mut Context<Self>) {
+        self.chosen = Some(kind);
+        cx.notify();
+    }
+
+    /// The coding-agent CLIs that were found on this machine.
+    pub fn agents(&self) -> &[e1_ui::agents::Agent] {
+        &self.agents
+    }
+
+    /// Look for the agent CLIs, once, in the background.
+    ///
+    /// Not a `fetch`: this asks the machine rather than GitHub, and it is
+    /// slow enough to matter — a login shell and a process per CLI — so it
+    /// happens off the window's thread and lands whenever it lands.
+    pub fn load_agents(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async move { e1_ui::agents::discover() })
+                .await;
+            this.update(cx, |this, cx| {
+                tracing::info!(count = found.len(), "agent CLIs found");
+                this.agents = found;
+                cx.emit(StoreEvent::Changed);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// A repository's history, if it has ever been asked for.

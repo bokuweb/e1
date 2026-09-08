@@ -458,3 +458,42 @@ commit.merge:
 commit.parents:
   en: Parents
   ja: 親コミット
+ask.title:
+  en: Ask an agent
+  ja: エージェントに聞く
+ask.button:
+  en: Ask AI
+  ja: AIに聞く
+ask.placeholder:
+  en: What should it look at?
+  ja: 何を見てほしい？
+ask.started:
+  en: "Started %{agent} in Terminal."
+  ja: "%{agent} をターミナルで開始しました"
+ask.failed:
+  en: "Could not start it: %{detail}"
+  ja: "開始できませんでした: %{detail}"
+ask.log_source:
+  en: "From the log of the job \"%{job}\", lines %{from}–%{to}"
+  ja: "ジョブ \"%{job}\" のログ %{from}–%{to} 行目"
+ask.item_source:
+  en: The body of the item
+  ja: 本文
+ask.to:
+  en: "Ask %{agent}"
+  ja: "%{agent} に聞く"
+ask.picked_source:
+  en: The part the reader picked out
+  ja: 選択された部分
+ask.context:
+  en: What goes with it
+  ja: 一緒に送る情報
+ask.excerpt_lines:
+  en: "(%{count} lines)"
+  ja: "（%{count} 行）"
+ask.file_source:
+  en: "From %{path}, lines %{from}–%{to}"
+  ja: "%{path} の %{from}–%{to} 行目"
+ask.diff_source:
+  en: "From the diff of %{path}"
+  ja: "%{path} の差分"

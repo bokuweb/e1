@@ -34,6 +34,10 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", feature
     "tree-sitter-languages",
 ] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+# The toolkit's own foundation crate, at the rev the toolkit pins. Linked
+# for one thing: the window-wide text selection, which is what tells us
+# what a reader has picked out of a rendered comment.
+gpui-base = { git = "https://github.com/longbridge/gpui-component" }
 
 anyhow = "1"
 base64 = "0.22"

@@ -824,6 +824,7 @@ impl GitHub for Scripted {
         let failing = job_id == 2;
         Ok(Job {
             id: job_id,
+            run_id: 900 + job_id,
             name: if job_id == 1 { "build" } else { "test" }.to_string(),
             state: if failing {
                 CheckState::Failure

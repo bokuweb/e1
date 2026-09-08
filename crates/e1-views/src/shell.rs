@@ -7,7 +7,7 @@
 //! detail — is mounted here exactly the way a host would mount it.
 
 use crate::browser::{BrowserEvent, FileBrowser};
-use crate::detail::Detail;
+use crate::detail::{Detail, DetailEvent};
 use crate::history::{History, HistoryEvent};
 use crate::list::{ItemEvent, ItemList};
 use crate::sidebar::{Sidebar, SidebarEvent};
@@ -155,6 +155,12 @@ impl Shell {
         let detail = cx.new(|cx| Detail::new(store.clone(), window, cx));
 
         let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(&detail, |this, _, event, _| match event {
+            DetailEvent::AgentChosen(kind) => {
+                this.settings.agent = Some(kind.id().to_string());
+                this.persist();
+            }
+        }));
         subscriptions.push(cx.subscribe(&history, |this, _, event, cx| match event {
             HistoryEvent::Open { repo, sha } => {
                 let (repo, sha) = (repo.clone(), sha.clone());
@@ -264,6 +270,21 @@ impl Shell {
             dragging: false,
             _subscriptions: subscriptions,
         };
+        // Which agent CLIs are here does not depend on being signed in, and
+        // the answer takes a second to find, so the looking starts now. The
+        // one an ask goes to was remembered; whether it is still installed
+        // is the store's question to answer.
+        let chosen = this
+            .settings
+            .agent
+            .as_deref()
+            .and_then(e1_ui::agents::Kind::parse);
+        this.store.update(cx, |store, cx| {
+            if let Some(kind) = chosen {
+                store.choose_agent(kind, cx);
+            }
+            store.load_agents(cx);
+        });
         if signed_in {
             this.store.update(cx, |store, cx| store.refresh_all(cx));
             // The window opens on the inbox, which is the question a person
@@ -295,6 +316,9 @@ impl Shell {
             }
             if let Some(job) = log {
                 detail.show_log(key.0, job, format!("job {job}"), cx);
+            }
+            if std::env::var_os("E1_DEMO_ASK").is_some() {
+                detail.ask_at_launch(cx);
             }
         });
         if !self.layout.is_open(Panel::RightPanel) {
@@ -1121,5 +1145,8 @@ impl Render for Shell {
                             .children(right_handle)
                     })),
             )
+            // A dialog is not drawn by the toolkit's `Root` on its own: the
+            // window says where the layer goes, and it goes over everything.
+            .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }

@@ -29,7 +29,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::text::TextView;
-use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
+use gpui_component::{Icon, IconName, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use std::collections::HashSet;
 
 /// A turning spinner for what is still running: the toolkit's, on the
@@ -65,6 +65,15 @@ enum Tab {
     /// The files and their diffs.
     Files,
 }
+
+/// What the column tells the window about.
+pub enum DetailEvent {
+    /// The reader picked which agent CLI an ask goes to. The window keeps
+    /// it, because the window owns the settings.
+    AgentChosen(e1_ui::agents::Kind),
+}
+
+impl EventEmitter<DetailEvent> for Detail {}
 
 /// What the column is reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +194,31 @@ pub struct Detail {
     /// The file on screen, parsed for highlighting: `None` when there is
     /// no grammar for it, or more of it than is worth parsing.
     code: Option<e1_ui::code::Code>,
+    /// The lines of the log the reader has picked out, as row indices.
+    log_selection: Option<(usize, usize)>,
+    /// Text picked out of what is rendered — a comment, a body.
+    picked_text: Option<String>,
+    /// Lines picked out of the file on screen.
+    code_selection: Option<(usize, usize)>,
+    /// Lines picked out of the diff: which file, and the rows either end.
+    diff_selection: Option<(String, usize, usize)>,
+    /// Where the pointer let go of a pick, which is where the offer goes.
+    offer_at: Option<Point<Pixels>>,
+    /// Open the ask at the next frame, which is the first place with a
+    /// window to open it from.
+    ask_soon: bool,
+    /// Whether the dialog's one CLI row is folded open into the list.
+    agents_open: bool,
+    /// Whether the dialog shows the excerpt. Folded to start: the reader
+    /// picked it out a moment ago and knows what it says.
+    excerpt_open: bool,
+    /// Pick lines and open the box the moment there are lines. A launch
+    /// argument asks for this; a reader picks their own.
+    ask_when_ready: bool,
+    /// What the reader wants asked.
+    ask_input: Entity<TextareaState>,
+    /// What came of the last ask, to say so.
+    ask_said: Option<String>,
     /// A job's log, parsed once when it lands.
     log_lines: Vec<e1_ui::log::Line>,
     /// What was on screen before the log, to go back to.
@@ -241,11 +275,36 @@ impl Detail {
         })
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx));
+        let ask_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder(rust_i18n::t!("ask.placeholder").to_string())
+                .auto_grow(3, 10)
+        });
         let review_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder(rust_i18n::t!("diff.comment.placeholder").to_string())
                 .auto_grow(2, 6)
         });
+        // ⌘⏎ sends, as it does on a comment; a plain ⏎ is a newline,
+        // because a question worth asking often runs to two lines.
+        cx.subscribe_in(
+            &ask_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(
+                    event,
+                    InputEvent::PressEnter {
+                        secondary: true,
+                        ..
+                    }
+                ) && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
+                    && this.send_ask(agent, cx)
+                {
+                    window.close_dialog(cx);
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -275,6 +334,17 @@ impl Detail {
             review_input,
             clear_review: false,
             code: None,
+            log_selection: None,
+            picked_text: None,
+            code_selection: None,
+            diff_selection: None,
+            offer_at: None,
+            ask_soon: false,
+            agents_open: false,
+            excerpt_open: false,
+            ask_when_ready: false,
+            ask_input,
+            ask_said: None,
             log_lines: Vec::new(),
             log_previous: None,
             log_steps: Vec::new(),
@@ -304,6 +374,350 @@ impl Detail {
             store.ensure_log(repo.clone(), job, cx);
             store.ensure_job(repo, job, cx);
         });
+        self.rebuild(cx);
+    }
+
+    /// Pick a line of the log, or stretch the pick to it with ⇧ held.
+    fn pick_log_line(&mut self, index: usize, extend: bool, cx: &mut Context<Self>) {
+        self.log_selection = match (self.log_selection, extend) {
+            (Some((anchor, _)), true) => Some((anchor.min(index), anchor.max(index))),
+            _ => Some((index, index)),
+        };
+        self.ask_said = None;
+        cx.notify();
+    }
+
+    /// Whether a row of the log is inside the pick.
+    fn log_picked(&self, index: usize) -> bool {
+        self.log_selection
+            .is_some_and(|(from, to)| (from..=to).contains(&index))
+    }
+
+    /// Notice what the reader dragged over.
+    ///
+    /// A pointer let go is the only moment a selection is finished, and the
+    /// toolkit keeps the selection for the whole window rather than per
+    /// view, so this is the one place that has to ask.
+    fn notice_selection(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = gpui_base::TextSelection::selected_text(window, cx);
+        let picked = picked.trim();
+        self.picked_text = (!picked.is_empty()).then(|| picked.to_string());
+        // A pick is a pick however it was made: dragged over rendered text,
+        // or clicked down a column of lines. The offer follows the pointer
+        // either way, and goes when there is nothing picked.
+        let anything = self.picked_text.is_some()
+            || self.log_selection.is_some()
+            || self.code_selection.is_some()
+            || self.diff_selection.is_some();
+        self.offer_at = anything.then_some(at);
+        self.ask_said = None;
+        cx.notify();
+    }
+
+    /// Pick a line of the file, or stretch the pick to it with ⇧ held.
+    fn pick_code_line(&mut self, index: usize, extend: bool, cx: &mut Context<Self>) {
+        self.code_selection = match (self.code_selection, extend) {
+            (Some((anchor, _)), true) => Some((anchor.min(index), anchor.max(index))),
+            _ => Some((index, index)),
+        };
+        cx.notify();
+    }
+
+    /// Whether a row of the file is inside the pick.
+    fn code_picked(&self, index: usize) -> bool {
+        self.code_selection
+            .is_some_and(|(from, to)| (from..=to).contains(&index))
+    }
+
+    /// Pick a row of the diff for the ask, or stretch the pick to it.
+    ///
+    /// With ⌥ held, because a plain click on a diff line already means
+    /// "comment on this line" and one gesture cannot mean two things.
+    fn pick_diff_row(&mut self, path: String, index: usize, extend: bool, cx: &mut Context<Self>) {
+        self.diff_selection = match (&self.diff_selection, extend) {
+            (Some((picked, anchor, _)), true) if *picked == path => {
+                Some((path, (*anchor).min(index), (*anchor).max(index)))
+            }
+            _ => Some((path, index, index)),
+        };
+        cx.notify();
+    }
+
+    /// Whether a row of the diff is inside the pick.
+    fn diff_picked(&self, path: &str, index: usize) -> bool {
+        self.diff_selection
+            .as_ref()
+            .is_some_and(|(picked, from, to)| picked == path && (*from..=*to).contains(&index))
+    }
+
+    /// The offer that appears where a selection was let go: a chip that
+    /// opens the ask on what was picked.
+    fn picked_offer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Nothing to offer when there is nowhere to send it.
+        if self.store.read(cx).agents().is_empty() {
+            return None;
+        }
+        let at = self.offer_at?;
+        let tokens = Tokens::global(cx).clone();
+        Some(
+            deferred(
+                // The point came from a mouse event, so it is in the
+                // window's coordinates. Anchored against the column, the
+                // chip landed a column's width from the pointer.
+                anchored()
+                    .position(point(at.x + px(8.), at.y + px(12.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        h_flex()
+                            .id("picked-offer")
+                            .px_2()
+                            .py_1()
+                            .gap_1p5()
+                            .items_center()
+                            .rounded(px(tokens.radius.control()))
+                            .bg(tokens.colors().popover())
+                            .border_1()
+                            .border_color(tokens.colors().border_strong)
+                            .shadow_lg()
+                            .cursor_pointer()
+                            .text_size(px(11.5))
+                            .text_color(tokens.colors().accent)
+                            .child(Icon::new(IconName::Bot).size_3())
+                            .child(rust_i18n::t!("ask.button").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| this.open_ask(window, cx))),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// What the ask box would send, from what is on screen and picked.
+    fn ask(&self, cx: &App) -> Option<e1_ui::agents::Ask> {
+        let store = self.store.read(cx);
+        let question = self.ask_input.read(cx).value().to_string();
+        match self.showing.as_ref()? {
+            Showing::Item(key) => {
+                let detail = store.detail(key).and_then(|fetch| fetch.value())?;
+                let item = &detail.item;
+                // The facts are the point of doing this here rather than
+                // leaving the reader to paste a link: what e1 knows — the
+                // owner, the number, the branch, the head commit — is what
+                // an agent needs to read the rest for itself.
+                let mut facts = vec![
+                    ("repository".to_string(), key.0.to_string()),
+                    ("owner".to_string(), key.0.owner.clone()),
+                    (
+                        if item.is_pull() {
+                            "pull request"
+                        } else {
+                            "issue"
+                        }
+                        .to_string(),
+                        format!("#{}", item.number),
+                    ),
+                ];
+                if let Some(pull) = &detail.pull {
+                    facts.push((
+                        "branch".to_string(),
+                        format!("{} \u{2192} {}", pull.head, pull.base),
+                    ));
+                    if !pull.head_sha.is_empty() {
+                        facts.push(("head commit".to_string(), pull.head_sha.clone()));
+                    }
+                }
+                if !item.labels.is_empty() {
+                    facts.push((
+                        "labels".to_string(),
+                        item.labels
+                            .iter()
+                            .map(|label| label.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
+                }
+                // A pick beats the whole body: the reader went to the
+                // trouble of saying which part they meant. Lines out of the
+                // diff say it most particularly of all.
+                let from_diff = self.diff_selection.as_ref().map(|(path, from, to)| {
+                    let text: Vec<String> = self
+                        .diff_rows
+                        .get(*from..=*to)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|row| match row {
+                            DiffRow::Line { line, .. } => Some(line.text.to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    (path.clone(), text.join("\n"))
+                });
+                if let Some((path, text)) = from_diff.filter(|(_, text)| !text.trim().is_empty()) {
+                    facts.push(("file".to_string(), path.clone()));
+                    return Some(e1_ui::agents::Ask {
+                        repo: Some(key.0.clone()),
+                        subject: format!("#{} {}", item.number, item.title),
+                        url: Some(item.html_url.clone()),
+                        source: Some(rust_i18n::t!("ask.diff_source", path = path).to_string()),
+                        excerpt: Some(text),
+                        question,
+                        facts,
+                    });
+                }
+                let picked = self.picked_text.clone();
+                let source = match picked {
+                    Some(_) => rust_i18n::t!("ask.picked_source"),
+                    None => rust_i18n::t!("ask.item_source"),
+                };
+                let excerpt = picked
+                    .or_else(|| Some(item.body.clone()))
+                    .filter(|text| !text.trim().is_empty());
+                Some(e1_ui::agents::Ask {
+                    repo: Some(key.0.clone()),
+                    subject: format!("#{} {}", item.number, item.title),
+                    url: Some(item.html_url.clone()),
+                    source: excerpt.as_ref().map(|_| source.to_string()),
+                    excerpt,
+                    question,
+                    facts,
+                })
+            }
+            Showing::Log { repo, job, name } => {
+                let (from, to) = self.log_selection?;
+                let excerpt: Vec<String> = self
+                    .log_lines
+                    .get(from..=to.min(self.log_lines.len().saturating_sub(1)))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|line| line.text.clone())
+                    .collect();
+                let read = store.job(repo, *job).and_then(|fetch| fetch.value());
+                let mut facts = vec![
+                    ("repository".to_string(), repo.to_string()),
+                    ("owner".to_string(), repo.owner.clone()),
+                    ("job".to_string(), format!("{name} ({job})")),
+                ];
+                if let Some(run) = read.map(|job| job.run_id).filter(|run| *run != 0) {
+                    facts.push(("workflow run".to_string(), run.to_string()));
+                }
+                if let Some(failed) = read.and_then(|job| {
+                    job.steps
+                        .iter()
+                        .find(|step| step.state == CheckState::Failure)
+                }) {
+                    facts.push(("failed step".to_string(), failed.name.clone()));
+                }
+                // A log is almost always opened from a pull, and that pull
+                // is what the reader is actually working on.
+                if let Some(Showing::Item(from)) = &self.log_previous {
+                    facts.push(("opened from".to_string(), format!("#{}", from.1)));
+                }
+                Some(e1_ui::agents::Ask {
+                    repo: Some(repo.clone()),
+                    subject: rust_i18n::t!("log.title", id = job).to_string(),
+                    url: read.map(|job| job.html_url.clone()),
+                    source: Some(
+                        rust_i18n::t!(
+                            "ask.log_source",
+                            job = name.clone(),
+                            from = from + 1,
+                            to = to + 1
+                        )
+                        .to_string(),
+                    ),
+                    excerpt: Some(excerpt.join("\n")),
+                    question,
+                    facts,
+                })
+            }
+            Showing::File(key) => {
+                let (from, to) = self.code_selection?;
+                let last = self.lines.len().saturating_sub(1);
+                let excerpt: Vec<String> = self
+                    .lines
+                    .get(from..=to.min(last))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|line| line.to_string())
+                    .collect();
+                Some(e1_ui::agents::Ask {
+                    repo: Some(key.0.clone()),
+                    subject: key.1.clone(),
+                    url: store
+                        .content(key)
+                        .and_then(|fetch| fetch.value())
+                        .map(|content| content.html_url.clone()),
+                    source: Some(
+                        rust_i18n::t!(
+                            "ask.file_source",
+                            path = key.1.clone(),
+                            from = from + 1,
+                            to = to + 1
+                        )
+                        .to_string(),
+                    ),
+                    excerpt: Some(excerpt.join("\n")),
+                    question,
+                    facts: vec![
+                        ("repository".to_string(), key.0.to_string()),
+                        ("owner".to_string(), key.0.owner.clone()),
+                        ("file".to_string(), key.1.clone()),
+                        ("lines".to_string(), format!("{}-{}", from + 1, to + 1)),
+                    ],
+                })
+            }
+            Showing::Commit { .. } => None,
+        }
+    }
+
+    /// Hand the ask to one of the CLIs and start a session on it.
+    fn send_ask(&mut self, agent: e1_ui::agents::Agent, cx: &mut Context<Self>) -> bool {
+        let Some(ask) = self.ask(cx) else {
+            return false;
+        };
+        // Which one was picked becomes the default: the next ask goes
+        // there without being asked, and the box is where it is changed.
+        self.store
+            .update(cx, |store, cx| store.choose_agent(agent.kind, cx));
+        cx.emit(DetailEvent::AgentChosen(agent.kind));
+        let workdir = ask
+            .repo
+            .as_ref()
+            .and_then(|repo| e1_ui::agents::checkout_in(repo, &e1_ui::agents::checkout_roots()));
+        let directory = e1_ui::Paths::from_env()
+            .map(|paths| paths.root().join("asks"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("e1-asks"));
+        let started = match e1_ui::agents::start(&agent, &ask, workdir.as_deref(), &directory) {
+            Ok(path) => {
+                tracing::info!(?path, agent = agent.kind.id(), "started an agent");
+                // The pick has been asked about; a fresh one starts a fresh
+                // ask.
+                self.picked_text = None;
+                self.log_selection = None;
+                self.code_selection = None;
+                self.diff_selection = None;
+                self.offer_at = None;
+                self.ask_said = None;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not start an agent");
+                // Said inside the dialog, which stays open: there is nowhere
+                // else left to say it, and a failure the reader cannot see
+                // is a click that did nothing.
+                self.ask_said =
+                    Some(rust_i18n::t!("ask.failed", detail = error.to_string()).to_string());
+                false
+            }
+        };
+        cx.notify();
+        started
+    }
+
+    /// Pick a few lines and open the ask box as soon as there are lines to
+    /// pick, for screenshots (`E1_DEMO_ASK=1`).
+    pub fn ask_at_launch(&mut self, cx: &mut Context<Self>) {
+        self.ask_when_ready = true;
         self.rebuild(cx);
     }
 
@@ -975,6 +1389,12 @@ impl Detail {
                         .collect();
                 }
                 self.rebuild_log_rows();
+                if self.ask_when_ready && !self.log_lines.is_empty() {
+                    self.ask_when_ready = false;
+                    let last = self.log_lines.len().saturating_sub(1);
+                    self.log_selection = Some((10.min(last), 12.min(last)));
+                    self.ask_soon = true;
+                }
             }
             _ => {}
         }
@@ -1224,6 +1644,8 @@ impl Detail {
                     .into_any_element()
             }
             DiffRow::Line { path, line } => {
+                let in_ask = self.diff_picked(path, index);
+                let ask_path = path.clone();
                 let path = path.clone();
                 let (fill, color, marker) = self.line_look(line, &tokens);
                 let side = if line.new.is_some() {
@@ -1248,11 +1670,22 @@ impl Detail {
                     .when(in_range, |this| {
                         this.bg(tokens.colors().accent.opacity(0.18))
                     })
+                    .when(in_ask, |this| this.bg(tokens.colors().accent.opacity(0.18)))
                     .when(clickable, |this| {
                         this.cursor_pointer()
                             .hover(|this| this.bg(tokens.colors().row_hover()))
                             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                                if let Some(number) = number {
+                                // ⌥ picks the line out for an agent; a plain
+                                // click means what it always meant, which is
+                                // "comment here".
+                                if event.modifiers().alt {
+                                    this.pick_diff_row(
+                                        ask_path.clone(),
+                                        index,
+                                        event.modifiers().shift,
+                                        cx,
+                                    );
+                                } else if let Some(number) = number {
                                     let extend = event.modifiers().shift;
                                     this.start_line_comment(path.clone(), number, side, extend, cx);
                                 }
@@ -1642,7 +2075,7 @@ impl Detail {
 
     /// One line of a job's log: the clock in the gutter, the text coloured
     /// by what the runner marked it as, wrapping when it is long.
-    fn log_line_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
+    fn log_line_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
         use e1_ui::log::Kind;
         let tokens = Tokens::global(cx);
         let Some(line) = self.log_lines.get(index) else {
@@ -1672,7 +2105,9 @@ impl Detail {
         // Under a step the lines sit in from its heading; without steps
         // they run from the edge.
         let inset = if self.log_steps.is_empty() { 8. } else { 36. };
+        let picked = self.log_picked(index);
         h_flex()
+            .id(("log-line", index))
             .w_full()
             .min_h(CODE_ROW)
             .pl(px(inset))
@@ -1682,6 +2117,14 @@ impl Detail {
             .font_family(mono)
             .text_size(px(11.5))
             .when_some(fill, |this, fill| this.bg(fill))
+            // Picking lines is what the ask box asks about: a click starts
+            // the pick and a ⇧-click stretches it, as it does on the diff.
+            .when(picked, |this| this.bg(tokens.colors().accent.opacity(0.18)))
+            .cursor_pointer()
+            .hover(|this| this.bg(tokens.colors().row_hover()))
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.pick_log_line(index, event.modifiers().shift, cx)
+            }))
             .child(
                 div()
                     .w(px(64.))
@@ -1703,7 +2146,7 @@ impl Detail {
     }
 
     /// One line of a file.
-    fn code_row(&self, index: usize, mono: SharedString, cx: &App) -> AnyElement {
+    fn code_row(&self, index: usize, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx);
         let Some(line) = self.lines.get(index) else {
             return div().h(CODE_ROW).into_any_element();
@@ -1715,7 +2158,9 @@ impl Detail {
             .as_ref()
             .map(|code| code.line(index, &e1_ui::code::theme(cx)))
             .unwrap_or_default();
+        let picked = self.code_picked(index);
         h_flex()
+            .id(("code-line", index))
             .h(CODE_ROW)
             .w_full()
             .px_1()
@@ -1724,6 +2169,12 @@ impl Detail {
             .text_size(px(11.5))
             .whitespace_nowrap()
             .overflow_hidden()
+            .when(picked, |this| this.bg(tokens.colors().accent.opacity(0.18)))
+            .cursor_pointer()
+            .hover(|this| this.bg(tokens.colors().row_hover()))
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.pick_code_line(index, event.modifiers().shift, cx)
+            }))
             .child(
                 div()
                     .w(px(48.))
@@ -1865,6 +2316,27 @@ impl Detail {
                 .child(rust_i18n::t!("detail.open_on_github").to_string())
                 .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
         );
+        // Asking about the whole item, for when nothing has been picked
+        // out of it. Only when there is an agent to ask.
+        if let Some(agent) = self.store.read(cx).chosen_agent().map(|agent| agent.kind) {
+            row = row.child(
+                h_flex()
+                    .id("ask-item")
+                    .gap_1()
+                    .items_center()
+                    .px_2p5()
+                    .py_1()
+                    .rounded(px(tokens.radius.control()))
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().accent)
+                    .bg(tokens.colors().accent.opacity(0.14))
+                    .hover(|this| this.bg(tokens.colors().accent.opacity(0.22)))
+                    .child(Icon::new(IconName::Bot).size_3())
+                    .child(rust_i18n::t!("ask.to", agent = agent.label()).to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_ask(window, cx))),
+            );
+        }
         if let Some(complaint) = complaint {
             row = row.child(
                 div()
@@ -3163,6 +3635,243 @@ impl Detail {
 }
 
 impl Detail {
+    /// Open the ask as a dialog over the window.
+    ///
+    /// A dialog rather than the popover it started as: what is being sent
+    /// is worth showing — the context, the excerpt, which CLI — and a
+    /// panel that closes when the pointer strays is the wrong shape for
+    /// something a reader reads before sending.
+    fn open_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ask) = self.ask(cx) else {
+            return;
+        };
+        if self.store.read(cx).agents().is_empty() {
+            return;
+        }
+        self.agents_open = false;
+        self.excerpt_open = false;
+        self.ask_said = None;
+        let this = cx.entity();
+        let store = self.store.clone();
+        let input = self.ask_input.clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let tokens = Tokens::global(cx).clone();
+            let agents = store.read(cx).agents().to_vec();
+            let chosen = store.read(cx).chosen_agent().map(|agent| agent.kind);
+            let facts: Vec<AnyElement> = ask
+                .facts
+                .iter()
+                .map(|(name, value)| {
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .text_size(px(11.5))
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .flex_shrink_0()
+                                .text_color(tokens.colors().text_muted)
+                                .child(name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(tokens.colors().text_secondary)
+                                .child(value.clone()),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            // One row saying where the ask will go, which opens into the
+            // rest. A list is not worth its height until it is wanted.
+            let open = this.read(cx).agents_open;
+            let row = |agent: e1_ui::agents::Agent, index: usize, folds: bool| {
+                let this = this.clone();
+                let marked = Some(agent.kind) == chosen;
+                let send = agent.clone();
+                h_flex()
+                    .id(("dialog-agent", index))
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(tokens.radius.row))
+                    .cursor_pointer()
+                    .when(folds, |this| {
+                        this.border_1().border_color(tokens.colors().border_strong)
+                    })
+                    .when(marked && !folds, |this| {
+                        this.bg(tokens.colors().row_active())
+                    })
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                    .child(
+                        Icon::new(IconName::SquareTerminal)
+                            .size_3p5()
+                            .text_color(tokens.colors().accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .text_color(tokens.colors().text_primary)
+                            .child(agent.label()),
+                    )
+                    .when(folds, |this| {
+                        this.child(
+                            Icon::new(if open {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .size_3()
+                            .text_color(tokens.colors().text_muted),
+                        )
+                    })
+                    .on_click(move |_, window, cx| {
+                        if folds {
+                            this.update(cx, |this, cx| {
+                                this.agents_open = !this.agents_open;
+                                cx.notify();
+                            });
+                        } else if this.update(cx, |this, cx| this.send_ask(send.clone(), cx)) {
+                            window.close_dialog(cx);
+                        }
+                    })
+                    .into_any_element()
+            };
+            let mut rows: Vec<AnyElement> = Vec::new();
+            if let Some(agent) = agents
+                .iter()
+                .find(|agent| Some(agent.kind) == chosen)
+                .or_else(|| agents.first())
+            {
+                rows.push(row(agent.clone(), 0, agents.len() > 1));
+            }
+            if open {
+                rows.extend(
+                    agents
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(|(_, agent)| Some(agent.kind) != chosen)
+                        .map(|(index, agent)| row(agent, index + 1, false)),
+                );
+            }
+            let excerpt = ask.excerpt.clone().unwrap_or_default();
+            let excerpt_open = this.read(cx).excerpt_open;
+            let this_for_fold = this.clone();
+            dialog
+                .w(px(560.))
+                // Opaque: the dialog's own default is the window's glass,
+                // and a panel that shows the page through it is unreadable.
+                .bg(tokens.colors().popover())
+                .title(rust_i18n::t!("ask.title").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(
+                            // The toolkit's own field draws a border and a
+                            // focus ring, and the two read as one crooked
+                            // outline over an opaque panel. This is the
+                            // shape the comment composer uses.
+                            div()
+                                .w_full()
+                                .p_1()
+                                .rounded(px(tokens.radius.control() + 2.))
+                                .bg(tokens.colors().bg_surface)
+                                .border_1()
+                                .border_color(tokens.colors().border_strong)
+                                .child(Textarea::new(&input)),
+                        )
+                        .when(!excerpt.trim().is_empty(), |this| {
+                            let lines = excerpt.lines().count();
+                            let open = excerpt_open;
+                            let fold = this_for_fold.clone();
+                            this.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .id("ask-excerpt")
+                                            .w_full()
+                                            .gap_1()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(
+                                                Icon::new(if open {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .size_3(),
+                                            )
+                                            .children(ask.source.clone())
+                                            .child(
+                                                rust_i18n::t!("ask.excerpt_lines", count = lines)
+                                                    .to_string(),
+                                            )
+                                            .on_click(move |_, _, cx| {
+                                                fold.update(cx, |this, cx| {
+                                                    this.excerpt_open = !this.excerpt_open;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    )
+                                    .when(open, |this| {
+                                        this.child(
+                                            div()
+                                                .w_full()
+                                                .max_h(px(200.))
+                                                .p_2()
+                                                .rounded(px(tokens.radius.control()))
+                                                .bg(tokens.colors().code_bg)
+                                                .font_family(
+                                                    gpui_component::Theme::global(cx)
+                                                        .mono_font_family
+                                                        .clone(),
+                                                )
+                                                .text_size(px(11.))
+                                                .text_color(tokens.colors().text_secondary)
+                                                .overflow_hidden()
+                                                .child(excerpt.clone()),
+                                        )
+                                    }),
+                            )
+                        })
+                        .when(!facts.is_empty(), |this| {
+                            this.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(rust_i18n::t!("ask.context").to_string()),
+                                    )
+                                    .children(facts),
+                            )
+                        })
+                        .children(this.read(cx).ask_said.clone().map(|said| {
+                            div()
+                                .w_full()
+                                .text_size(px(11.5))
+                                .text_color(tokens.colors().status_error)
+                                .child(said)
+                        }))
+                        .child(v_flex().w_full().gap_0p5().children(rows)),
+                )
+        });
+        cx.notify();
+    }
+
     /// One commit: what it says, who wrote it, and what it changed.
     fn commit(&self, repo: RepoId, sha: String, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
@@ -3382,6 +4091,29 @@ impl Render for Detail {
             Some(Showing::Log { repo, job, name }) => self.log(repo, job, name, cx),
             Some(Showing::Commit { repo, sha }) => self.commit(repo, sha, cx),
         };
-        v_flex().size_full().child(body)
+        // The ask strip sits under whatever the column is showing, so
+        // there is one of it however the column got here.
+        // Only once there is a CLI to offer: the log can land before the
+        // machine has been looked at.
+        if self.ask_soon && !self.store.read(cx).agents().is_empty() {
+            // Opening a dialog needs a window and this is a draw; the next
+            // frame is where it can be done.
+            self.ask_soon = false;
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.open_ask(window, cx));
+            });
+        }
+        v_flex()
+            .relative()
+            .size_full()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    this.notice_selection(event.position, window, cx)
+                }),
+            )
+            .child(div().flex_1().min_h_0().child(body))
+            .children(self.picked_offer(cx))
     }
 }
