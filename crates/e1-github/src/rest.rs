@@ -22,6 +22,10 @@ use std::time::Duration;
 /// Where GitHub's API is.
 pub const API: &str = "https://api.github.com";
 
+/// How many rows a page of a listing holds. A hundred is GitHub's ceiling
+/// for every endpoint here, and asking for fewer only means asking again.
+const PAGE_SIZE: usize = 100;
+
 /// How many pages a listing walks before stopping. At a hundred per page this
 /// is enough for any list a person scrolls, and bounded for the ones nobody
 /// does.
@@ -295,7 +299,8 @@ impl GitHub for Rest {
     }
 
     fn notifications(&self) -> Result<Vec<Notification>> {
-        let pages: Vec<WireNotification> = self.get_pages("/notifications?per_page=50")?;
+        let pages: Vec<WireNotification> =
+            self.get_pages(&format!("/notifications?per_page={PAGE_SIZE}"))?;
         Ok(pages
             .into_iter()
             .filter_map(WireNotification::into_notification)
@@ -304,7 +309,9 @@ impl GitHub for Rest {
 
     fn repositories(&self) -> Result<Vec<Repo>> {
         let pages: Vec<WireRepo> = self.get_pages(
-            "/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member",
+            &format!(
+                "/user/repos?sort=pushed&per_page={PAGE_SIZE}&affiliation=owner,collaborator,organization_member"
+            ),
         )?;
         Ok(pages.into_iter().filter_map(WireRepo::into_repo).collect())
     }
@@ -314,14 +321,14 @@ impl GitHub for Rest {
         match kind {
             ListKind::Pulls => {
                 let path = format!(
-                    "/repos/{repo}/pulls?state={state}&per_page=50&sort=updated&direction=desc"
+                    "/repos/{repo}/pulls?state={state}&per_page={PAGE_SIZE}&sort=updated&direction=desc"
                 );
                 let pages: Vec<WirePull> = self.get_pages(&path)?;
                 Ok(pages.into_iter().map(|pull| pull.into_item(repo)).collect())
             }
             ListKind::Issues => {
                 let path = format!(
-                    "/repos/{repo}/issues?state={state}&per_page=50&sort=updated&direction=desc"
+                    "/repos/{repo}/issues?state={state}&per_page={PAGE_SIZE}&sort=updated&direction=desc"
                 );
                 let pages: Vec<WireIssue> = self.get_pages(&path)?;
                 Ok(pages
@@ -334,16 +341,31 @@ impl GitHub for Rest {
     }
 
     fn search(&self, query: &str) -> Result<Vec<Item>> {
-        let path = format!(
-            "/search/issues?q={}&per_page=50&sort=updated&order=desc",
+        // Search answers with an object where the listings answer with an
+        // array, so this cannot go through `get_pages`; the walk is the
+        // same. Without it the three search-backed sections stopped at one
+        // page while every other list walked to the cap.
+        let mut next = Some(format!(
+            "/search/issues?q={}&per_page={PAGE_SIZE}&sort=updated&order=desc",
             encode_query(query)
-        );
-        let (search, _): (WireSearch, _) = self.get(&path)?;
-        Ok(search
-            .items
-            .into_iter()
-            .filter_map(|issue| issue.into_item(None))
-            .collect())
+        ));
+        let mut items = Vec::new();
+        let mut pages = 0;
+        while let Some(url) = next.take() {
+            if pages == PAGE_CAP {
+                break;
+            }
+            pages += 1;
+            let (search, following): (WireSearch, _) = self.get(&url)?;
+            items.extend(
+                search
+                    .items
+                    .into_iter()
+                    .filter_map(|issue| issue.into_item(None)),
+            );
+            next = following;
+        }
+        Ok(items)
     }
 
     fn item(&self, repo: &RepoId, number: u64) -> Result<Item> {
@@ -364,13 +386,13 @@ impl GitHub for Rest {
     }
 
     fn comments(&self, repo: &RepoId, number: u64) -> Result<Vec<Comment>> {
-        let path = format!("/repos/{repo}/issues/{number}/comments?per_page=100");
+        let path = format!("/repos/{repo}/issues/{number}/comments?per_page={PAGE_SIZE}");
         let pages: Vec<WireComment> = self.get_pages(&path)?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
 
     fn pull_files(&self, repo: &RepoId, number: u64) -> Result<Vec<PullFile>> {
-        let path = format!("/repos/{repo}/pulls/{number}/files?per_page=100");
+        let path = format!("/repos/{repo}/pulls/{number}/files?per_page={PAGE_SIZE}");
         let pages: Vec<WirePullFile> = self.get_pages(&path)?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
@@ -444,7 +466,7 @@ impl GitHub for Rest {
         // and commit statuses (older integrations). One list, the runs
         // first.
         let (runs, _): (WireCheckRuns, _) = self.get(&format!(
-            "/repos/{repo}/commits/{sha}/check-runs?per_page=100"
+            "/repos/{repo}/commits/{sha}/check-runs?per_page={PAGE_SIZE}"
         ))?;
         let (combined, _): (WireCombinedStatus, _) =
             self.get(&format!("/repos/{repo}/commits/{sha}/status"))?;
@@ -454,7 +476,7 @@ impl GitHub for Rest {
     }
 
     fn review_comments(&self, repo: &RepoId, number: u64) -> Result<Vec<ReviewComment>> {
-        let path = format!("/repos/{repo}/pulls/{number}/comments?per_page=100");
+        let path = format!("/repos/{repo}/pulls/{number}/comments?per_page={PAGE_SIZE}");
         let pages: Vec<WireReviewComment> = self.get_pages(&path)?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
@@ -558,7 +580,7 @@ impl GitHub for Rest {
 
     fn labels(&self, repo: &RepoId) -> Result<Vec<Label>> {
         let pages: Vec<WireLabel> =
-            self.get_pages(&format!("/repos/{repo}/labels?per_page=100"))?;
+            self.get_pages(&format!("/repos/{repo}/labels?per_page={PAGE_SIZE}"))?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
 
@@ -583,7 +605,7 @@ impl GitHub for Rest {
 
     fn assignees(&self, repo: &RepoId) -> Result<Vec<User>> {
         let pages: Vec<WireUser> =
-            self.get_pages(&format!("/repos/{repo}/assignees?per_page=100"))?;
+            self.get_pages(&format!("/repos/{repo}/assignees?per_page={PAGE_SIZE}"))?;
         Ok(pages.into_iter().map(Into::into).collect())
     }
 
