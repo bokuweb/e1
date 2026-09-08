@@ -739,6 +739,65 @@ pub struct PullFile {
     pub patch: Option<String>,
 }
 
+/// One commit, as a history row needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Commit {
+    /// The full hash.
+    pub sha: String,
+    /// The whole message, subject and body.
+    pub message: String,
+    /// Who wrote it, as git recorded it. Not every commit has a GitHub
+    /// account behind it, and the name in the commit is what git shows.
+    pub author_name: String,
+    /// The GitHub account, when GitHub matched one to the address.
+    pub author: Option<User>,
+    /// When it was authored.
+    pub authored_at: DateTime<Utc>,
+    /// Its parents, first one first. Two or more means a merge.
+    pub parents: Vec<String>,
+    /// Where it lives on the web.
+    pub html_url: String,
+}
+
+impl Commit {
+    /// The first line, which is what a row shows.
+    pub fn subject(&self) -> &str {
+        self.message.lines().next().unwrap_or_default()
+    }
+
+    /// The message under the subject, blank line dropped.
+    pub fn body(&self) -> &str {
+        match self.message.split_once('\n') {
+            Some((_, rest)) => rest.trim_start_matches('\n').trim_end(),
+            None => "",
+        }
+    }
+
+    /// The hash as it is written in prose.
+    pub fn short(&self) -> &str {
+        let end = self.sha.len().min(7);
+        &self.sha[..end]
+    }
+
+    /// Whether it brought two histories together.
+    pub fn is_merge(&self) -> bool {
+        self.parents.len() > 1
+    }
+}
+
+/// A commit with what it changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitDetail {
+    /// The commit itself.
+    pub commit: Commit,
+    /// Lines added across every file.
+    pub additions: u64,
+    /// Lines removed across every file.
+    pub deletions: u64,
+    /// The files it touched, with their patches.
+    pub files: Vec<PullFile>,
+}
+
 /// Whether a tree entry is a file or a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {

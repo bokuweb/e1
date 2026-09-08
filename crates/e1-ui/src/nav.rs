@@ -78,6 +78,11 @@ pub enum Focus {
         /// Which repository.
         repo: RepoId,
     },
+    /// A repository's commits.
+    History {
+        /// Which repository.
+        repo: RepoId,
+    },
     /// Items matching a search the reader typed.
     Search {
         /// The query, in GitHub's search syntax.
@@ -92,13 +97,20 @@ pub enum RepoTab {
     Pulls,
     /// Issues.
     Issues,
-    /// The file finder.
+    /// The file tree.
     Files,
+    /// The commit history.
+    History,
 }
 
 impl RepoTab {
-    /// All three, in the order the chips show them.
-    pub const ALL: &'static [RepoTab] = &[RepoTab::Pulls, RepoTab::Issues, RepoTab::Files];
+    /// All four, in the order the chips show them.
+    pub const ALL: &'static [RepoTab] = &[
+        RepoTab::Pulls,
+        RepoTab::Issues,
+        RepoTab::Files,
+        RepoTab::History,
+    ];
 
     /// The locale key for the chip.
     pub fn label_key(self) -> &'static str {
@@ -106,6 +118,7 @@ impl RepoTab {
             Self::Pulls => "list.pulls",
             Self::Issues => "list.issues",
             Self::Files => "list.files",
+            Self::History => "list.history",
         }
     }
 }
@@ -114,6 +127,11 @@ impl Focus {
     /// A repository's file finder.
     pub fn files(repo: RepoId) -> Self {
         Self::Files { repo }
+    }
+
+    /// A repository's history.
+    pub fn history(repo: RepoId) -> Self {
+        Self::History { repo }
     }
 
     /// A search.
@@ -131,6 +149,7 @@ impl Focus {
                 ListKind::Issues => RepoTab::Issues,
             }),
             Self::Files { .. } => Some(RepoTab::Files),
+            Self::History { .. } => Some(RepoTab::History),
             Self::Section(_) | Self::Search { .. } => None,
         }
     }
@@ -155,13 +174,14 @@ impl Focus {
                 status,
             },
             RepoTab::Files => Self::Files { repo },
+            RepoTab::History => Self::History { repo },
         })
     }
 
     /// Whether the store answers this focus with a list of items. The file
-    /// finder is not a list and a search is.
+    /// tree and the history are their own things; a search is a list.
     pub fn is_list(&self) -> bool {
-        !matches!(self, Self::Files { .. })
+        !matches!(self, Self::Files { .. } | Self::History { .. })
     }
 
     /// A repository's open pulls, which is what picking a repository shows
@@ -201,7 +221,7 @@ impl Focus {
     /// The repository, when the focus is one.
     pub fn repo_id(&self) -> Option<&RepoId> {
         match self {
-            Self::Repo { repo, .. } | Self::Files { repo } => Some(repo),
+            Self::Repo { repo, .. } | Self::Files { repo } | Self::History { repo } => Some(repo),
             Self::Section(_) | Self::Search { .. } => None,
         }
     }
@@ -210,7 +230,9 @@ impl Focus {
     pub fn title(&self) -> String {
         match self {
             Self::Section(section) => rust_i18n::t!(section.label_key()).to_string(),
-            Self::Repo { repo, .. } | Self::Files { repo } => repo.to_string(),
+            Self::Repo { repo, .. } | Self::Files { repo } | Self::History { repo } => {
+                repo.to_string()
+            }
             Self::Search { query } => query.clone(),
         }
     }
@@ -219,7 +241,7 @@ impl Focus {
     pub fn subtitle(&self) -> Option<String> {
         match self {
             Self::Section(_) => None,
-            Self::Repo { .. } | Self::Files { .. } => self
+            Self::Repo { .. } | Self::Files { .. } | Self::History { .. } => self
                 .repo_tab()
                 .map(|tab| rust_i18n::t!(tab.label_key()).to_string()),
             Self::Search { .. } => Some(rust_i18n::t!("search.title").to_string()),

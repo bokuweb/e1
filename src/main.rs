@@ -65,6 +65,12 @@ fn log_at_launch() -> Option<u64> {
     std::env::var("E1_DEMO_LOG").ok()?.parse().ok()
 }
 
+/// `E1_DEMO_HISTORY=owner/name`: a repository's history to open, with its
+/// newest commit read. For screenshots.
+fn history_at_launch() -> Option<RepoId> {
+    RepoId::parse(&std::env::var("E1_DEMO_HISTORY").ok()?)
+}
+
 /// `E1_DEMO_FILES=owner/name:src/main.rs`: a repository's finder to open,
 /// with a file read. The path is optional. For screenshots.
 fn browse_at_launch() -> Option<(RepoId, Option<String>)> {
@@ -121,6 +127,7 @@ fn main() -> Result<()> {
             let open_at_launch = open_at_launch();
             let log_at_launch = log_at_launch();
             let browse_at_launch = browse_at_launch();
+            let history_at_launch = history_at_launch();
             cx.open_window(options, |window, cx| {
                 let shell = cx.new(|cx| {
                     e1_views::Shell::new(
@@ -139,6 +146,9 @@ fn main() -> Result<()> {
                 }
                 if let Some((repo, file)) = browse_at_launch {
                     shell.update(cx, |shell, cx| shell.browse_at_launch(repo, file, cx));
+                }
+                if let Some(repo) = history_at_launch {
+                    shell.update(cx, |shell, cx| shell.history_at_launch(repo, cx));
                 }
                 cx.new(|cx| Root::new(shell, window, cx))
             })

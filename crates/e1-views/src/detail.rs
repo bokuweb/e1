@@ -18,7 +18,8 @@ use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
 use e1_github::{
-    CheckState, Comment, FileStatus, JobStep, MergeMethod, RepoId, ReviewComment, ReviewEvent, Side,
+    CheckState, Comment, FileStatus, JobStep, MergeMethod, PullFile, RepoId, ReviewComment,
+    ReviewEvent, Side,
 };
 use e1_ui::Tokens;
 use e1_ui::diff;
@@ -78,6 +79,8 @@ enum Showing {
         job: u64,
         name: String,
     },
+    /// One commit out of a repository's history.
+    Commit { repo: RepoId, sha: String },
 }
 
 /// One row of the log screen.
@@ -627,6 +630,22 @@ impl Detail {
         self.rebuild(cx);
     }
 
+    /// Show a commit, fetching it if it never has been.
+    pub fn show_commit(&mut self, repo: RepoId, sha: String, cx: &mut Context<Self>) {
+        let showing = Showing::Commit {
+            repo: repo.clone(),
+            sha: sha.clone(),
+        };
+        if self.showing.as_ref() != Some(&showing) {
+            self.collapsed.clear();
+            self.code = None;
+        }
+        self.showing = Some(showing);
+        self.store
+            .update(cx, |store, cx| store.ensure_commit(repo, sha, cx));
+        self.rebuild(cx);
+    }
+
     /// Show a file, fetching it if it never has been.
     pub fn show_file(&mut self, key: FileKey, cx: &mut Context<Self>) {
         self.showing = Some(Showing::File(key.clone()));
@@ -683,6 +702,10 @@ impl Detail {
                     store.load_job(repo, job, cx);
                 });
             }
+            Some(Showing::Commit { repo, sha }) => {
+                self.store
+                    .update(cx, |store, cx| store.load_commit(repo, sha, cx));
+            }
             None => {}
         }
     }
@@ -699,6 +722,10 @@ impl Detail {
                 .content(key)
                 .and_then(|content| content.value())
                 .map(|content| content.html_url.clone()),
+            Showing::Commit { repo, sha } => store
+                .commit(repo, sha)
+                .and_then(|fetch| fetch.value())
+                .map(|detail| detail.commit.html_url.clone()),
             Showing::Log { repo, job, .. } => store
                 .job(repo, *job)
                 .and_then(|job| job.value())
@@ -736,6 +763,106 @@ impl Detail {
             self.collapsed.insert(name);
         }
         self.rebuild(cx);
+    }
+
+    /// The virtualized rows for a set of files and the comments on them.
+    ///
+    /// A pull's files and a commit's files are the same thing to a reader,
+    /// so they are the same thing here: a commit simply has no comments to
+    /// hang under its lines.
+    fn diff_rows_for(&self, files: &[PullFile], comments: &[ReviewComment]) -> Vec<DiffRow> {
+        let composing = self.composing.clone();
+        // The comments and the composer hang under the line they
+        // are about, so a line's row is followed by theirs.
+        let after_line = |rows: &mut Vec<DiffRow>, path: &str, line: &diff::Line| {
+            for comment in comments.iter().filter(|comment| {
+                comment.path == path
+                    && comment.line.is_some()
+                    && match comment.side {
+                        Side::Left => comment.line == line.old,
+                        Side::Right => comment.line == line.new,
+                    }
+            }) {
+                rows.push(DiffRow::Comment(comment.clone()));
+            }
+            if let Some((c_path, c_line, c_side)) = &composing
+                && c_path == path
+                && match c_side {
+                    Side::Left => line.old == Some(*c_line),
+                    Side::Right => line.new == Some(*c_line),
+                }
+            {
+                rows.push(DiffRow::Composer);
+            }
+        };
+        let mut rows = Vec::new();
+        for (index, file) in files.iter().enumerate() {
+            let collapsed = self.collapsed.contains(&file.filename);
+            rows.push(DiffRow::File {
+                index,
+                name: match &file.previous_filename {
+                    Some(previous) => format!("{previous} → {}", file.filename).into(),
+                    None => file.filename.clone().into(),
+                },
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                collapsed,
+            });
+            if collapsed {
+                continue;
+            }
+            let Some(patch) = &file.patch else {
+                rows.push(DiffRow::Note(
+                    rust_i18n::t!("detail.file.no_diff").to_string().into(),
+                ));
+                continue;
+            };
+            let lines = diff::parse(patch);
+            if self.split {
+                for row in diff::split(&lines) {
+                    match row {
+                        diff::SplitRow::Hunk(text) => rows.push(DiffRow::Hunk(text.into())),
+                        diff::SplitRow::Pair { left, right } => {
+                            rows.push(DiffRow::Pair {
+                                path: file.filename.clone(),
+                                left: left.clone(),
+                                right: right.clone(),
+                            });
+                            // A context line is on both sides; its
+                            // comments hang once.
+                            let context =
+                                left.as_ref().is_some_and(|l| l.kind == diff::Kind::Context);
+                            if let Some(l) = &left {
+                                after_line(&mut rows, &file.filename, l);
+                            }
+                            if let Some(r) = &right
+                                && !context
+                            {
+                                after_line(&mut rows, &file.filename, r);
+                            }
+                        }
+                    }
+                }
+            } else {
+                for line in lines {
+                    rows.push(DiffRow::Line {
+                        path: file.filename.clone(),
+                        line: line.clone(),
+                    });
+                    after_line(&mut rows, &file.filename, &line);
+                }
+            }
+            // Comments whose line has since changed hang at the
+            // file's end, marked outdated.
+            for comment in comments
+                .iter()
+                .filter(|comment| comment.path == file.filename && comment.line.is_none())
+            {
+                rows.push(DiffRow::Comment(comment.clone()));
+            }
+        }
+        rows
     }
 
     /// Recompute the virtualized rows from what the store has, and ask for
@@ -788,99 +915,18 @@ impl Detail {
                             .unwrap_or_default(),
                     )
                 };
-                let composing = self.composing.clone();
-                // The comments and the composer hang under the line they
-                // are about, so a line's row is followed by theirs.
-                let after_line = |rows: &mut Vec<DiffRow>, path: &str, line: &diff::Line| {
-                    for comment in comments.iter().filter(|comment| {
-                        comment.path == path
-                            && comment.line.is_some()
-                            && match comment.side {
-                                Side::Left => comment.line == line.old,
-                                Side::Right => comment.line == line.new,
-                            }
-                    }) {
-                        rows.push(DiffRow::Comment(comment.clone()));
-                    }
-                    if let Some((c_path, c_line, c_side)) = &composing
-                        && c_path == path
-                        && match c_side {
-                            Side::Left => line.old == Some(*c_line),
-                            Side::Right => line.new == Some(*c_line),
-                        }
-                    {
-                        rows.push(DiffRow::Composer);
-                    }
-                };
-                let mut rows = Vec::new();
-                for (index, file) in files.iter().enumerate() {
-                    let collapsed = self.collapsed.contains(&file.filename);
-                    rows.push(DiffRow::File {
-                        index,
-                        name: match &file.previous_filename {
-                            Some(previous) => format!("{previous} → {}", file.filename).into(),
-                            None => file.filename.clone().into(),
-                        },
-                        status: file.status,
-                        additions: file.additions,
-                        deletions: file.deletions,
-                        collapsed,
-                    });
-                    if collapsed {
-                        continue;
-                    }
-                    let Some(patch) = &file.patch else {
-                        rows.push(DiffRow::Note(
-                            rust_i18n::t!("detail.file.no_diff").to_string().into(),
-                        ));
-                        continue;
-                    };
-                    let lines = diff::parse(patch);
-                    if self.split {
-                        for row in diff::split(&lines) {
-                            match row {
-                                diff::SplitRow::Hunk(text) => rows.push(DiffRow::Hunk(text.into())),
-                                diff::SplitRow::Pair { left, right } => {
-                                    rows.push(DiffRow::Pair {
-                                        path: file.filename.clone(),
-                                        left: left.clone(),
-                                        right: right.clone(),
-                                    });
-                                    // A context line is on both sides; its
-                                    // comments hang once.
-                                    let context = left
-                                        .as_ref()
-                                        .is_some_and(|l| l.kind == diff::Kind::Context);
-                                    if let Some(l) = &left {
-                                        after_line(&mut rows, &file.filename, l);
-                                    }
-                                    if let Some(r) = &right
-                                        && !context
-                                    {
-                                        after_line(&mut rows, &file.filename, r);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        for line in lines {
-                            rows.push(DiffRow::Line {
-                                path: file.filename.clone(),
-                                line: line.clone(),
-                            });
-                            after_line(&mut rows, &file.filename, &line);
-                        }
-                    }
-                    // Comments whose line has since changed hang at the
-                    // file's end, marked outdated.
-                    for comment in comments
-                        .iter()
-                        .filter(|comment| comment.path == file.filename && comment.line.is_none())
-                    {
-                        rows.push(DiffRow::Comment(comment.clone()));
-                    }
-                }
-                self.diff_rows = rows;
+                self.diff_rows = self.diff_rows_for(&files, &comments);
+                self.diff_state.reset(self.diff_rows.len());
+            }
+            Some(Showing::Commit { repo, sha }) => {
+                let files = self
+                    .store
+                    .read(cx)
+                    .commit(repo, sha)
+                    .and_then(|fetch| fetch.value())
+                    .map(|detail| detail.files.clone())
+                    .unwrap_or_default();
+                self.diff_rows = self.diff_rows_for(&files, &[]);
                 self.diff_state.reset(self.diff_rows.len());
             }
             Some(Showing::File(key)) => {
@@ -1001,49 +1047,55 @@ impl Detail {
             .into_any_element()
     }
 
+    /// The two chips that switch a diff between unified and split. A pull's
+    /// files and a commit both carry them.
+    fn diff_modes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let chip = |this: &Self, split: bool, label: String, cx: &mut Context<Self>| {
+            let selected = this.split == split;
+            div()
+                .id(if split { "mode-split" } else { "mode-unified" })
+                .px_2()
+                .py_0p5()
+                .rounded(px(tokens.radius.row - 2.))
+                .cursor_pointer()
+                .text_size(px(11.5))
+                .when(selected, |this| {
+                    this.bg(tokens.colors().row_active())
+                        .text_color(tokens.colors().text_primary)
+                })
+                .when(!selected, |this| {
+                    this.text_color(tokens.colors().text_muted)
+                })
+                .hover(|this| this.bg(tokens.colors().row_hover()))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
+        };
+        h_flex()
+            .gap_0p5()
+            .p_0p5()
+            .rounded(px(tokens.radius.row))
+            .bg(tokens.colors().bg_surface)
+            .child(chip(
+                self,
+                false,
+                rust_i18n::t!("diff.unified").to_string(),
+                cx,
+            ))
+            .child(chip(
+                self,
+                true,
+                rust_i18n::t!("diff.split").to_string(),
+                cx,
+            ))
+            .into_any_element()
+    }
+
     /// The two chips that switch a pull between its halves, and — on the
     /// files — the two that switch the diff between unified and split.
     fn tabs(&self, files: u64, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
-        let mode = (self.tab == Tab::Files).then(|| {
-            let chip = |this: &Self, split: bool, label: String, cx: &mut Context<Self>| {
-                let selected = this.split == split;
-                div()
-                    .id(if split { "mode-split" } else { "mode-unified" })
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(tokens.radius.row - 2.))
-                    .cursor_pointer()
-                    .text_size(px(11.5))
-                    .when(selected, |this| {
-                        this.bg(tokens.colors().row_active())
-                            .text_color(tokens.colors().text_primary)
-                    })
-                    .when(!selected, |this| {
-                        this.text_color(tokens.colors().text_muted)
-                    })
-                    .hover(|this| this.bg(tokens.colors().row_hover()))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
-            };
-            h_flex()
-                .gap_0p5()
-                .p_0p5()
-                .rounded(px(tokens.radius.row))
-                .bg(tokens.colors().bg_surface)
-                .child(chip(
-                    self,
-                    false,
-                    rust_i18n::t!("diff.unified").to_string(),
-                    cx,
-                ))
-                .child(chip(
-                    self,
-                    true,
-                    rust_i18n::t!("diff.split").to_string(),
-                    cx,
-                ))
-        });
+        let mode = (self.tab == Tab::Files).then(|| self.diff_modes(cx));
         let chip = |this: &Self, tab: Tab, label: String, cx: &mut Context<Self>| {
             let selected = this.tab == tab;
             div()
@@ -3111,6 +3163,125 @@ impl Detail {
 }
 
 impl Detail {
+    /// One commit: what it says, who wrote it, and what it changed.
+    fn commit(&self, repo: RepoId, sha: String, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let mono = gpui_component::Theme::global(cx).mono_font_family.clone();
+        let fetch = self.store.read(cx).commit(&repo, &sha).cloned();
+        let (detail, error) = match &fetch {
+            Some(fetch) => (fetch.value().cloned(), fetch.error().map(str::to_string)),
+            None => (None, None),
+        };
+        let Some(detail) = detail else {
+            let body = match error {
+                Some(error) => self.notice(error, true, cx),
+                None => crate::skeleton::diff(cx),
+            };
+            return v_flex().size_full().child(body).into_any_element();
+        };
+        let commit = &detail.commit;
+        let picture = commit.author.as_ref().map(|author| {
+            avatar(
+                self.store.read(cx).avatar(&author.avatar_url),
+                &author.login,
+                px(18.),
+                cx,
+            )
+        });
+        let body = commit.body().to_string();
+        let head = v_flex()
+            .w_full()
+            .flex_shrink_0()
+            .px_5()
+            .pt_4()
+            .pb_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(tokens.colors().border_subtle)
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .font_medium()
+                    .text_color(tokens.colors().text_primary)
+                    .child(commit.subject().to_string()),
+            )
+            .when(!body.is_empty(), |this| {
+                this.child(
+                    div()
+                        .max_w(px(MEASURE))
+                        .text_size(px(12.5))
+                        .font_family(mono.clone())
+                        .line_height(relative(1.5))
+                        .text_color(tokens.colors().text_secondary)
+                        .child(body),
+                )
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .children(picture)
+                    .child(
+                        div()
+                            .text_color(tokens.colors().text_secondary)
+                            .child(commit.author_name.clone()),
+                    )
+                    .child(div().child(age(chrono::Utc::now(), commit.authored_at)))
+                    .child(
+                        div()
+                            .font_family(mono.clone())
+                            .px_1p5()
+                            .rounded(px(tokens.radius.control()))
+                            .bg(tokens.colors().code_bg)
+                            .child(commit.short().to_string()),
+                    )
+                    .when(commit.is_merge(), |this| {
+                        this.child(
+                            div()
+                                .px_1p5()
+                                .rounded(px(tokens.radius.control()))
+                                .bg(tokens.colors().accent.opacity(0.18))
+                                .text_color(tokens.colors().accent)
+                                .child(rust_i18n::t!("commit.merge").to_string()),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(rust_i18n::t!("commit.files", count = detail.files.len()).to_string())
+                    .child(
+                        div()
+                            .text_color(tokens.colors().status_done)
+                            .child(format!("+{}", detail.additions)),
+                    )
+                    .child(
+                        div()
+                            .text_color(tokens.colors().status_error)
+                            .child(format!("−{}", detail.deletions)),
+                    )
+                    .child(self.diff_modes(cx)),
+            );
+        let this = cx.entity();
+        let body = list(self.diff_state.clone(), move |index, _window, cx| {
+            this.update(cx, |this, cx| this.diff_row(index, mono.clone(), cx))
+        })
+        .flex_1()
+        .size_full();
+        v_flex()
+            .size_full()
+            .child(head)
+            .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
     /// An Actions job's log: the job's name, then its lines.
     fn log(&self, repo: RepoId, job: u64, name: String, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
@@ -3209,6 +3380,7 @@ impl Render for Detail {
             Some(Showing::Item(key)) => self.item(key, cx),
             Some(Showing::File(key)) => self.file(key, cx),
             Some(Showing::Log { repo, job, name }) => self.log(repo, job, name, cx),
+            Some(Showing::Commit { repo, sha }) => self.commit(repo, sha, cx),
         };
         v_flex().size_full().child(body)
     }

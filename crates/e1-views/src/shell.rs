@@ -8,6 +8,7 @@
 
 use crate::browser::{BrowserEvent, FileBrowser};
 use crate::detail::Detail;
+use crate::history::{History, HistoryEvent};
 use crate::list::{ItemEvent, ItemList};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::signin::{SignIn, SignInEvent};
@@ -88,6 +89,8 @@ pub struct Shell {
     list: Entity<ItemList>,
     detail: Entity<Detail>,
     browser: Entity<FileBrowser>,
+    /// The centre column as a repository's commits.
+    history: Entity<History>,
     sign_in: Entity<SignIn>,
     /// The search box in the centre strip.
     search: Entity<InputState>,
@@ -143,6 +146,7 @@ impl Shell {
         });
         let sign_in = cx.new(|_| SignIn::new());
         let browser = cx.new(|cx| FileBrowser::new(store.clone(), window, cx));
+        let history = cx.new(|cx| History::new(store.clone(), cx));
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(rust_i18n::t!("search.placeholder").to_string())
         });
@@ -151,6 +155,16 @@ impl Shell {
         let detail = cx.new(|cx| Detail::new(store.clone(), window, cx));
 
         let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(&history, |this, _, event, cx| match event {
+            HistoryEvent::Open { repo, sha } => {
+                let (repo, sha) = (repo.clone(), sha.clone());
+                this.detail
+                    .update(cx, |detail, cx| detail.show_commit(repo, sha, cx));
+                if !this.layout.is_open(Panel::RightPanel) {
+                    this.toggle(Panel::RightPanel, cx);
+                }
+            }
+        }));
         subscriptions.push(cx.subscribe(&browser, |this, _, event, cx| match event {
             BrowserEvent::Open { repo, path } => {
                 let key = (repo.clone(), path.clone());
@@ -237,6 +251,7 @@ impl Shell {
             list,
             detail,
             browser,
+            history,
             sign_in,
             search,
             current: None,
@@ -304,6 +319,14 @@ impl Shell {
         }
     }
 
+    /// Open a repository's history with its newest commit read, as soon as
+    /// the window is up. For screenshots (`E1_DEMO_HISTORY=owner/name`).
+    pub fn history_at_launch(&mut self, repo: e1_github::RepoId, cx: &mut Context<Self>) {
+        self.refocus(Focus::history(repo), cx);
+        self.history
+            .update(cx, |history, cx| history.open_newest(cx));
+    }
+
     /// Forget the token and go back to the sign-in screen.
     ///
     /// Only a token this app stored is deleted. One from the environment or
@@ -338,6 +361,11 @@ impl Shell {
                 let repo = repo.clone();
                 self.browser
                     .update(cx, |browser, cx| browser.set_repo(repo, cx));
+            }
+            Focus::History { repo } => {
+                let repo = repo.clone();
+                self.history
+                    .update(cx, |history, cx| history.set_repo(repo, cx));
             }
             _ => self.list.update(cx, |list, cx| list.set_focus(focus, cx)),
         }
@@ -390,23 +418,36 @@ impl Shell {
 
     /// What the centre column is showing, whichever view is showing it.
     fn focus(&self, cx: &App) -> Option<Focus> {
-        let list = self.list.read(cx).focus().cloned();
-        // The finder's repository is the focus while the finder is what is
-        // on screen, which is when the list's focus is older than it.
-        match self.centre_is_browser(cx) {
-            true => self.browser_focus(cx),
-            false => list,
+        // The file tree and the history carry their own repository, and one
+        // of them is the focus while it is what is on screen; otherwise the
+        // focus is the list's.
+        if self.centre_is_browser(cx) {
+            return self.browser_focus(cx);
         }
+        if self.centre_is_history(cx) {
+            return self.history_focus(cx);
+        }
+        self.list.read(cx).focus().cloned()
     }
 
     fn browser_focus(&self, cx: &App) -> Option<Focus> {
         self.browser.read(cx).repo().cloned().map(Focus::files)
     }
 
-    /// Whether the finder is the centre column right now.
+    fn history_focus(&self, cx: &App) -> Option<Focus> {
+        self.history.read(cx).repo().cloned().map(Focus::history)
+    }
+
+    /// Whether the file tree is the centre column right now.
     fn centre_is_browser(&self, cx: &App) -> bool {
         matches!(self.current.as_ref(), Some(Focus::Files { .. }))
             && self.browser.read(cx).repo().is_some()
+    }
+
+    /// Whether the history is the centre column right now.
+    fn centre_is_history(&self, cx: &App) -> bool {
+        matches!(self.current.as_ref(), Some(Focus::History { .. }))
+            && self.history.read(cx).repo().is_some()
     }
 
     /// Change the list without going through the sidebar: the kind and
@@ -598,6 +639,7 @@ impl Shell {
         self.store.update(cx, |store, cx| store.refresh_all(cx));
         self.list.update(cx, |list, cx| list.refresh(cx));
         self.browser.update(cx, |browser, cx| browser.refresh(cx));
+        self.history.update(cx, |history, cx| history.refresh(cx));
         self.detail.update(cx, |detail, cx| detail.refresh(cx));
     }
 
@@ -958,6 +1000,8 @@ impl Render for Shell {
             self.sign_in.clone().into_any_element()
         } else if self.centre_is_browser(cx) {
             self.browser.clone().into_any_element()
+        } else if self.centre_is_history(cx) {
+            self.history.clone().into_any_element()
         } else {
             self.list.clone().into_any_element()
         };
