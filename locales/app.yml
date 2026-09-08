@@ -497,3 +497,9 @@ ask.file_source:
 ask.diff_source:
   en: "From the diff of %{path}"
   ja: "%{path} の差分"
+detail.review.comment:
+  en: Comment
+  ja: コメント
+detail.review.needs_body:
+  en: Say what should change before asking for changes.
+  ja: 変更を求めるには、何を変えてほしいか書いてください
