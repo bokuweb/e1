@@ -219,6 +219,9 @@ pub struct Detail {
     ask_input: Entity<TextareaState>,
     /// What came of the last ask, to say so.
     ask_said: Option<String>,
+    /// What the review controls have to say for themselves, when a review
+    /// could not be sent as asked.
+    review_says: Option<String>,
     /// A job's log, parsed once when it lands.
     log_lines: Vec<e1_ui::log::Line>,
     /// What was on screen before the log, to go back to.
@@ -266,11 +269,15 @@ impl Detail {
         });
         cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
             // ⌘⏎ sends, the way it does on GitHub; a plain ⏎ is a newline.
-            if let InputEvent::PressEnter {
-                secondary: true, ..
-            } = event
-            {
-                this.send_comment(cx);
+            match event {
+                InputEvent::PressEnter {
+                    secondary: true, ..
+                } => this.send_comment(cx),
+                InputEvent::Change if this.review_says.is_some() => {
+                    this.review_says = None;
+                    cx.notify();
+                }
+                _ => {}
             }
         })
         .detach();
@@ -345,6 +352,7 @@ impl Detail {
             ask_when_ready: false,
             ask_input,
             ask_said: None,
+            review_says: None,
             log_lines: Vec::new(),
             log_previous: None,
             log_steps: Vec::new(),
@@ -932,6 +940,15 @@ impl Detail {
             return;
         };
         let body = self.composer.read(cx).value().trim().to_string();
+        // GitHub refuses a request for changes with nothing said, and a
+        // round trip to be told so is a click that looks like it did
+        // nothing. Approving says everything it needs to by itself.
+        if event == ReviewEvent::RequestChanges && body.is_empty() {
+            self.review_says = Some(rust_i18n::t!("detail.review.needs_body").to_string());
+            cx.notify();
+            return;
+        }
+        self.review_says = None;
         self.clear_composer = true;
         self.store
             .update(cx, |store, cx| store.review(key, event, body, cx));
@@ -3499,21 +3516,28 @@ impl Detail {
                 )
                 .into_any_element()
         };
-        let composer = (!showing_files).then(|| self.composer(item.is_pull(), cx));
+        // On the files too: a review is written while reading the diff,
+        // and sending it from the other tab means going back for it.
+        let composer = self.composer(item.is_pull(), showing_files, cx);
 
         v_flex()
             .size_full()
             .child(head)
             .child(body)
-            .children(composer)
+            .child(composer)
             .into_any_element()
     }
 
-    /// The comment box at the foot of the conversation, always in view:
-    /// a box that scrolled away with the thread had its button below the
-    /// fold more often than not. For a pull the same words can be a
-    /// review — approving, or asking for changes — so those are here too.
-    fn composer(&self, is_pull: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// The comment box at the foot of the column, always in view: a box
+    /// that scrolled away with the thread had its button below the fold
+    /// more often than not. For a pull the same words can be a review —
+    /// approving, or asking for changes — so those are here too.
+    ///
+    /// It is under the diff as well as under the conversation. A review is
+    /// written while reading the diff, and approving from the other tab
+    /// means leaving the thing being approved to do it. Under the diff the
+    /// words are called a review, because that is what they will be.
+    fn composer(&self, is_pull: bool, reviewing: bool, cx: &mut Context<Self>) -> AnyElement {
         let tokens = Tokens::global(cx).clone();
         let mut buttons = h_flex().w_full().justify_end().gap_1p5().items_center();
         if is_pull {
@@ -3533,13 +3557,20 @@ impl Detail {
                     |this, cx| this.send_review(ReviewEvent::Approve, cx),
                 ));
         }
-        buttons = buttons.child(self.button(
-            "send-comment",
-            rust_i18n::t!("detail.comment.send").to_string(),
-            true,
-            cx,
-            |this, cx| this.send_comment(cx),
-        ));
+        buttons = buttons.child(
+            self.button(
+                "send-comment",
+                rust_i18n::t!(if reviewing {
+                    "detail.review.comment"
+                } else {
+                    "detail.comment.send"
+                })
+                .to_string(),
+                true,
+                cx,
+                |this, cx| this.send_comment(cx),
+            ),
+        );
         div()
             .w_full()
             .flex_shrink_0()
@@ -3548,6 +3579,15 @@ impl Detail {
             .pt_2()
             .border_t_1()
             .border_color(tokens.colors().border_subtle)
+            .children(self.review_says.clone().map(|says| {
+                div()
+                    .w_full()
+                    .max_w(px(MEASURE))
+                    .pb_1()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().status_attention)
+                    .child(says)
+            }))
             .child(
                 v_flex()
                     .w_full()
