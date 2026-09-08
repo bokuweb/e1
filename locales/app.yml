@@ -497,9 +497,9 @@ ask.item:
 ask.to:
   en: "Ask %{agent}"
   ja: "%{agent} に聞く"
-ask.words:
-  en: "%{count} words"
-  ja: "%{count} 語"
+ask.picked:
+  en: Ask about the selection
+  ja: 選択した部分について聞く
 ask.picked_source:
   en: The part the reader picked out
   ja: 選択された部分

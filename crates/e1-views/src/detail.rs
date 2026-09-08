@@ -202,6 +202,8 @@ pub struct Detail {
     /// Open the ask at the next frame, which is the first place with a
     /// window to open it from.
     ask_soon: bool,
+    /// Whether the dialog's one CLI row is folded open into the list.
+    agents_open: bool,
     /// Pick lines and open the box the moment there are lines. A launch
     /// argument asks for this; a reader picks their own.
     ask_when_ready: bool,
@@ -320,6 +322,7 @@ impl Detail {
             log_selection: None,
             picked_text: None,
             ask_soon: false,
+            agents_open: false,
             ask_when_ready: false,
             ask_input,
             ask_said: None,
@@ -390,49 +393,42 @@ impl Detail {
     /// The offer that appears where a selection was let go: a chip that
     /// opens the ask on what was picked.
     fn picked_offer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (text, at) = self.picked_text.clone()?;
+        // Nothing to offer when there is nowhere to send it.
+        if self.store.read(cx).agents().is_empty() {
+            return None;
+        }
+        let (_, at) = self.picked_text.clone()?;
         let tokens = Tokens::global(cx).clone();
-        let words = text.split_whitespace().count();
         Some(
-            div()
-                .absolute()
-                .left(at.x - px(24.))
-                .top(at.y + px(8.))
-                .child(
-                    deferred(
-                        anchored()
-                            .position_mode(AnchoredPositionMode::Local)
-                            .snap_to_window_with_margin(px(8.))
-                            .child(
-                                h_flex()
-                                    .id("picked-offer")
-                                    .px_2()
-                                    .py_1()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .rounded(px(tokens.radius.control()))
-                                    .bg(tokens.colors().popover())
-                                    .border_1()
-                                    .border_color(tokens.colors().border_strong)
-                                    .shadow_lg()
-                                    .cursor_pointer()
-                                    .text_size(px(11.5))
-                                    .text_color(tokens.colors().accent)
-                                    .child(Icon::new(IconName::Bot).size_3())
-                                    .child(rust_i18n::t!("ask.button").to_string())
-                                    .child(div().text_color(tokens.colors().text_muted).child(
-                                        rust_i18n::t!("ask.words", count = words).to_string(),
-                                    ))
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| {
-                                            this.open_ask(window, cx)
-                                        }),
-                                    ),
-                            ),
-                    )
-                    .with_priority(3),
-                )
-                .into_any_element(),
+            deferred(
+                // The point came from a mouse event, so it is in the
+                // window's coordinates. Anchored against the column, the
+                // chip landed a column's width from the pointer.
+                anchored()
+                    .position(point(at.x + px(8.), at.y + px(12.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        h_flex()
+                            .id("picked-offer")
+                            .px_2()
+                            .py_1()
+                            .gap_1p5()
+                            .items_center()
+                            .rounded(px(tokens.radius.control()))
+                            .bg(tokens.colors().popover())
+                            .border_1()
+                            .border_color(tokens.colors().border_strong)
+                            .shadow_lg()
+                            .cursor_pointer()
+                            .text_size(px(11.5))
+                            .text_color(tokens.colors().accent)
+                            .child(Icon::new(IconName::Bot).size_3())
+                            .child(rust_i18n::t!("ask.button").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| this.open_ask(window, cx))),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
         )
     }
 
@@ -3475,6 +3471,10 @@ impl Detail {
         let Some(ask) = self.ask(cx) else {
             return;
         };
+        if self.store.read(cx).agents().is_empty() {
+            return;
+        }
+        self.agents_open = false;
         self.ask_said = None;
         let this = cx.entity();
         let store = self.store.clone();
@@ -3509,54 +3509,89 @@ impl Detail {
                         .into_any_element()
                 })
                 .collect();
-            let rows: Vec<AnyElement> = agents
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, agent)| {
-                    let picked = chosen == Some(agent.kind);
-                    let label = agent.label();
-                    let this = this.clone();
-                    h_flex()
-                        .id(("dialog-agent", index))
-                        .w_full()
-                        .px_2()
-                        .py_1p5()
-                        .gap_2()
-                        .items_center()
-                        .rounded(px(tokens.radius.row))
-                        .cursor_pointer()
-                        .when(picked, |this| this.bg(tokens.colors().row_active()))
-                        .hover(|this| this.bg(tokens.colors().row_hover()))
-                        .child(
-                            Icon::new(IconName::SquareTerminal)
-                                .size_3p5()
-                                .text_color(tokens.colors().accent),
+            // One row saying where the ask will go, which opens into the
+            // rest. A list is not worth its height until it is wanted.
+            let open = this.read(cx).agents_open;
+            let row = |agent: e1_ui::agents::Agent, index: usize, folds: bool| {
+                let this = this.clone();
+                let marked = Some(agent.kind) == chosen;
+                let send = agent.clone();
+                h_flex()
+                    .id(("dialog-agent", index))
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(tokens.radius.row))
+                    .cursor_pointer()
+                    .when(folds, |this| {
+                        this.border_1().border_color(tokens.colors().border_strong)
+                    })
+                    .when(marked && !folds, |this| {
+                        this.bg(tokens.colors().row_active())
+                    })
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                    .child(
+                        Icon::new(IconName::SquareTerminal)
+                            .size_3p5()
+                            .text_color(tokens.colors().accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .text_color(tokens.colors().text_primary)
+                            .child(agent.label()),
+                    )
+                    .when(folds, |this| {
+                        this.child(
+                            Icon::new(if open {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .size_3()
+                            .text_color(tokens.colors().text_muted),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(12.5))
-                                .text_color(tokens.colors().text_primary)
-                                .child(label),
-                        )
-                        .when(picked, |this| {
-                            this.child(
-                                Icon::new(IconName::Check)
-                                    .size_3()
-                                    .text_color(tokens.colors().accent),
-                            )
-                        })
-                        .on_click(move |_, window, cx| {
-                            this.update(cx, |this, cx| this.send_ask(agent.clone(), cx));
+                    })
+                    .on_click(move |_, window, cx| {
+                        if folds {
+                            this.update(cx, |this, cx| {
+                                this.agents_open = !this.agents_open;
+                                cx.notify();
+                            });
+                        } else {
+                            this.update(cx, |this, cx| this.send_ask(send.clone(), cx));
                             window.close_dialog(cx);
-                        })
-                        .into_any_element()
-                })
-                .collect();
+                        }
+                    })
+                    .into_any_element()
+            };
+            let mut rows: Vec<AnyElement> = Vec::new();
+            if let Some(agent) = agents
+                .iter()
+                .find(|agent| Some(agent.kind) == chosen)
+                .or_else(|| agents.first())
+            {
+                rows.push(row(agent.clone(), 0, agents.len() > 1));
+            }
+            if open {
+                rows.extend(
+                    agents
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(|(_, agent)| Some(agent.kind) != chosen)
+                        .map(|(index, agent)| row(agent, index + 1, false)),
+                );
+            }
             let excerpt = ask.excerpt.clone().unwrap_or_default();
             dialog
                 .w(px(560.))
+                // Opaque: the dialog's own default is the window's glass,
+                // and a panel that shows the page through it is unreadable.
+                .bg(tokens.colors().popover())
                 .title(rust_i18n::t!("ask.title").to_string())
                 .child(
                     v_flex()
@@ -3607,20 +3642,7 @@ impl Detail {
                                     .children(facts),
                             )
                         })
-                        .child(
-                            v_flex()
-                                .w_full()
-                                .gap_0p5()
-                                .when(rows.is_empty(), |this| {
-                                    this.child(
-                                        div()
-                                            .text_size(px(11.5))
-                                            .text_color(tokens.colors().text_muted)
-                                            .child(rust_i18n::t!("ask.none").to_string()),
-                                    )
-                                })
-                                .children(rows),
-                        ),
+                        .child(v_flex().w_full().gap_0p5().children(rows)),
                 )
         });
         cx.notify();
@@ -3632,24 +3654,21 @@ impl Detail {
     /// offer is visible before the reader knows to pick anything, and it
     /// says what would be sent.
     fn ask_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // With no CLI on the machine there is nothing to offer, and an
+        // offer that cannot be taken is worse than none.
+        let chosen = self.store.read(cx).chosen_agent().map(|agent| agent.kind)?;
         let tokens = Tokens::global(cx).clone();
         let picked_lines = self.log_selection.map(|(from, to)| to - from + 1);
-        let picked_words = self
-            .picked_text
-            .as_ref()
-            .map(|(text, _)| text.split_whitespace().count());
-        let (what, ready) = match (&self.showing, picked_lines, picked_words) {
+        let picked = self.picked_text.is_some();
+        let (what, ready) = match (&self.showing, picked_lines, picked) {
             (Some(Showing::Log { .. }), Some(lines), _) => {
                 (rust_i18n::t!("ask.lines", count = lines).to_string(), true)
             }
             (Some(Showing::Log { .. }), None, _) => (rust_i18n::t!("ask.pick").to_string(), false),
-            (Some(Showing::Item(_)), _, Some(words)) => {
-                (rust_i18n::t!("ask.words", count = words).to_string(), true)
-            }
-            (Some(Showing::Item(_)), _, None) => (rust_i18n::t!("ask.item").to_string(), true),
+            (Some(Showing::Item(_)), _, true) => (rust_i18n::t!("ask.picked").to_string(), true),
+            (Some(Showing::Item(_)), _, false) => (rust_i18n::t!("ask.item").to_string(), true),
             _ => return None,
         };
-        let chosen = self.store.read(cx).chosen_agent().map(|agent| agent.kind);
         let said = self.ask_said.clone();
         Some(
             h_flex()
@@ -3698,11 +3717,10 @@ impl Detail {
                                 )
                         })
                         .child(Icon::new(IconName::Bot).size_3())
-                        .child(match chosen {
-                            Some(kind) if ready => {
-                                rust_i18n::t!("ask.to", agent = kind.label()).to_string()
-                            }
-                            _ => rust_i18n::t!("ask.button").to_string(),
+                        .child(if ready {
+                            rust_i18n::t!("ask.to", agent = chosen.label()).to_string()
+                        } else {
+                            rust_i18n::t!("ask.button").to_string()
                         }),
                 )
                 .into_any_element(),
@@ -3930,7 +3948,9 @@ impl Render for Detail {
         };
         // The ask strip sits under whatever the column is showing, so
         // there is one of it however the column got here.
-        if self.ask_soon {
+        // Only once there is a CLI to offer: the log can land before the
+        // machine has been looked at.
+        if self.ask_soon && !self.store.read(cx).agents().is_empty() {
             // Opening a dialog needs a window and this is a draw; the next
             // frame is where it can be done.
             self.ask_soon = false;
