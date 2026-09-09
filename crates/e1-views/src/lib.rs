@@ -15,6 +15,7 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 pub mod avatar;
 pub mod browser;
 pub mod detail;
+pub mod fade;
 pub mod history;
 pub mod list;
 pub mod shell;

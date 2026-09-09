@@ -4124,13 +4124,35 @@ impl Render for Detail {
             self.review_input
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
-        let body = match self.showing.clone() {
-            None => self.notice(rust_i18n::t!("detail.empty").to_string(), false, cx),
-            Some(Showing::Item(key)) => self.item(key, cx),
-            Some(Showing::File(key)) => self.file(key, cx),
-            Some(Showing::Log { repo, job, name }) => self.log(repo, job, name, cx),
-            Some(Showing::Commit { repo, sha }) => self.commit(repo, sha, cx),
+        // What is on screen fades in when it lands. The id is what the
+        // content is, so the fade plays once per thing read and not again
+        // while it is being read.
+        let (body, id): (AnyElement, ElementId) = match self.showing.clone() {
+            None => (
+                self.notice(rust_i18n::t!("detail.empty").to_string(), false, cx),
+                "detail-empty".into(),
+            ),
+            Some(Showing::Item(key)) => (
+                self.item(key.clone(), cx),
+                (
+                    SharedString::from(format!("detail-item:{}", key.0)),
+                    key.1 as usize,
+                )
+                    .into(),
+            ),
+            Some(Showing::File(key)) => (
+                self.file(key.clone(), cx),
+                SharedString::from(format!("detail-file:{}/{}", key.0, key.1)).into(),
+            ),
+            Some(Showing::Log { repo, job, name }) => {
+                (self.log(repo, job, name, cx), ("detail-log", job).into())
+            }
+            Some(Showing::Commit { repo, sha }) => (
+                self.commit(repo, sha.clone(), cx),
+                SharedString::from(format!("detail-commit:{sha}")).into(),
+            ),
         };
+        let body = crate::fade::fade_in(id, body, cx);
         // The ask strip sits under whatever the column is showing, so
         // there is one of it however the column got here.
         // Only once there is a CLI to offer: the log can land before the
