@@ -160,6 +160,23 @@ impl Shell {
                 this.settings.agent = Some(kind.id().to_string());
                 this.persist();
             }
+            DetailEvent::Tuned(kind, tuning) => {
+                // Nothing chosen is a choice too — it is how a reader goes
+                // back to the CLI's own default — so it removes the entry
+                // rather than writing an empty one.
+                let keep = |field: &mut std::collections::BTreeMap<String, String>,
+                            value: Option<&str>| match value {
+                    Some(value) => {
+                        field.insert(kind.id().to_string(), value.to_string());
+                    }
+                    None => {
+                        field.remove(kind.id());
+                    }
+                };
+                keep(&mut this.settings.agent_models, tuning.model());
+                keep(&mut this.settings.agent_efforts, tuning.effort());
+                this.persist();
+            }
         }));
         subscriptions.push(cx.subscribe(&history, |this, _, event, cx| match event {
             HistoryEvent::Open { repo, sha } => {
@@ -279,9 +296,25 @@ impl Shell {
             .agent
             .as_deref()
             .and_then(e1_ui::agents::Kind::parse);
+        let tuning: Vec<(e1_ui::agents::Kind, e1_ui::agents::Tuning)> = e1_ui::agents::Kind::ALL
+            .into_iter()
+            .map(|kind| {
+                (
+                    kind,
+                    e1_ui::agents::Tuning {
+                        model: this.settings.agent_models.get(kind.id()).cloned(),
+                        effort: this.settings.agent_efforts.get(kind.id()).cloned(),
+                    },
+                )
+            })
+            .filter(|(_, tuning)| tuning != &e1_ui::agents::Tuning::default())
+            .collect();
         this.store.update(cx, |store, cx| {
             if let Some(kind) = chosen {
                 store.choose_agent(kind, cx);
+            }
+            for (kind, tuning) in tuning {
+                store.tune(kind, tuning, cx);
             }
             store.load_agents(cx);
         });

@@ -482,6 +482,15 @@ ask.item_source:
 ask.to:
   en: "Ask %{agent}"
   ja: "%{agent} に聞く"
+ask.model:
+  en: Model
+  ja: モデル
+ask.effort:
+  en: Thinking
+  ja: 思考量
+ask.default:
+  en: Default
+  ja: 既定
 ask.picked_source:
   en: The part the reader picked out
   ja: 選択された部分

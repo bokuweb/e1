@@ -109,19 +109,176 @@ impl Kind {
         }
     }
 
-    /// The arguments that start an interactive session already holding the
-    /// question.
+    /// The models this CLI is known to take, best-known first, as
+    /// suggestions for a picker.
     ///
-    /// Claude Code, Codex and Cursor all take it as the one positional
-    /// argument, which is checked; the rest follow their documented shape.
-    /// A CLI that has changed its mind about this is a line to edit here.
-    pub fn arguments(self, prompt: &str) -> Vec<String> {
-        let prompt = prompt.to_string();
+    /// Not a closed set. What reaches the command line is whatever string
+    /// [`Tuning`] carries, because vendors rename models between releases
+    /// and a list compiled into a build goes stale; these are the names
+    /// each CLI's own `--help` gives, and a name it has never heard of is
+    /// still passed through. Empty means e1 has no suggestion to offer,
+    /// not that the CLI has no models.
+    pub fn models(self) -> &'static [Choice] {
+        const CLAUDE: &[Choice] = &[
+            Choice::new("fable", "Fable"),
+            Choice::new("opus", "Opus"),
+            Choice::new("sonnet", "Sonnet"),
+        ];
+        const CODEX: &[Choice] = &[
+            Choice::new("gpt-5.6-sol", "Sol"),
+            Choice::new("gpt-5.6-terra", "Terra"),
+            Choice::new("gpt-5.6-luna", "Luna"),
+        ];
+        const CURSOR: &[Choice] = &[
+            Choice::new("gpt-5", "GPT-5"),
+            Choice::new("sonnet-4", "Sonnet 4"),
+            Choice::new("sonnet-4-thinking", "Sonnet 4 thinking"),
+        ];
         match self {
-            Kind::Claude | Kind::Codex | Kind::Cursor | Kind::Amp => vec![prompt],
-            Kind::Gemini => vec!["-i".into(), prompt],
-            Kind::OpenCode => vec!["run".into(), prompt],
+            Kind::Claude => CLAUDE,
+            Kind::Codex => CODEX,
+            Kind::Cursor => CURSOR,
+            Kind::Gemini | Kind::OpenCode | Kind::Amp => &[],
         }
+    }
+
+    /// How much thinking this CLI can be asked for, least first, when it
+    /// can be asked at all.
+    ///
+    /// Cursor has no such flag — its thinking models say so in their names
+    /// — and the rest do not take one either, so for those this is empty
+    /// and the row is not drawn.
+    pub fn efforts(self) -> &'static [Choice] {
+        const CLAUDE: &[Choice] = &[
+            Choice::new("low", "Low"),
+            Choice::new("medium", "Medium"),
+            Choice::new("high", "High"),
+            Choice::new("xhigh", "X-high"),
+            Choice::new("max", "Max"),
+        ];
+        const CODEX: &[Choice] = &[
+            Choice::new("minimal", "Minimal"),
+            Choice::new("low", "Low"),
+            Choice::new("medium", "Medium"),
+            Choice::new("high", "High"),
+            Choice::new("xhigh", "X-high"),
+        ];
+        match self {
+            Kind::Claude => CLAUDE,
+            Kind::Codex => CODEX,
+            Kind::Cursor | Kind::Gemini | Kind::OpenCode | Kind::Amp => &[],
+        }
+    }
+
+    /// The arguments that start an interactive session already holding the
+    /// question, and asking it of the model the reader picked.
+    ///
+    /// Claude Code, Codex and Cursor all take the question as the one
+    /// positional argument, which is checked; the rest follow their
+    /// documented shape. A CLI that has changed its mind about any of this
+    /// is a line to edit here.
+    ///
+    /// A `tuning` with nothing in it adds nothing to the command line,
+    /// which is the point: the CLI then starts on whatever the reader
+    /// configured for it, exactly as it did before e1 could ask for
+    /// anything else.
+    pub fn arguments(self, prompt: &str, tuning: &Tuning) -> Vec<String> {
+        let prompt = prompt.to_string();
+        let model = tuning.model();
+        let effort = tuning.effort();
+        let flag = |name: &str, value: Option<&str>| -> Vec<String> {
+            value
+                .map(|value| vec![name.to_string(), value.to_string()])
+                .unwrap_or_default()
+        };
+        match self {
+            Kind::Claude => {
+                let mut arguments = flag("--model", model);
+                arguments.extend(flag("--effort", effort));
+                arguments.push(prompt);
+                arguments
+            }
+            Kind::Codex => {
+                let mut arguments = flag("-m", model);
+                // Codex has no flag for the effort: it is a setting, and
+                // `-c` overrides one for this session. The value is parsed
+                // as TOML, so the name goes in quoted.
+                if let Some(effort) = effort {
+                    arguments.push("-c".into());
+                    arguments.push(format!("model_reasoning_effort=\"{effort}\""));
+                }
+                arguments.push(prompt);
+                arguments
+            }
+            Kind::Cursor => {
+                let mut arguments = flag("--model", model);
+                arguments.push(prompt);
+                arguments
+            }
+            Kind::Gemini => {
+                let mut arguments = flag("-m", model);
+                arguments.push("-i".into());
+                arguments.push(prompt);
+                arguments
+            }
+            Kind::OpenCode => {
+                let mut arguments = vec!["run".to_string()];
+                arguments.extend(flag("--model", model));
+                arguments.push(prompt);
+                arguments
+            }
+            Kind::Amp => vec![prompt],
+        }
+    }
+}
+
+/// One thing a picker offers: what the CLI is passed, and what the reader
+/// is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Choice {
+    /// What goes on the command line.
+    pub id: &'static str,
+    /// What the picker calls it.
+    pub label: &'static str,
+}
+
+impl Choice {
+    /// One of them, as the tables above write them.
+    pub const fn new(id: &'static str, label: &'static str) -> Self {
+        Self { id, label }
+    }
+}
+
+/// Which model an ask is put to, and how much thinking it is allowed.
+///
+/// Both are strings rather than enumerations, and both are optional: a
+/// model named in `~/.e1/app.json` that this build has never heard of is
+/// passed through unchanged, and nothing at all means nothing is added to
+/// the command line — the CLI's own configuration decides, which is what
+/// most readers will want most of the time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tuning {
+    /// What the CLI calls the model: `opus`, `gpt-5.6-sol`.
+    pub model: Option<String>,
+    /// What it calls the effort level: `high`, `xhigh`.
+    pub effort: Option<String>,
+}
+
+impl Tuning {
+    /// The model, when one was picked and it is not blank.
+    pub fn model(&self) -> Option<&str> {
+        Self::said(&self.model)
+    }
+
+    /// The effort level, when one was picked and it is not blank.
+    pub fn effort(&self) -> Option<&str> {
+        Self::said(&self.effort)
+    }
+
+    /// Nothing said and nothing but spaces said are the same answer: a
+    /// hand-edited settings file is where the blank comes from.
+    fn said(value: &Option<String>) -> Option<&str> {
+        value.as_deref().map(str::trim).filter(|v| !v.is_empty())
     }
 }
 
@@ -389,7 +546,7 @@ impl Ask {
 /// The prompt travels inside the script as a quoted argument rather than in
 /// a file the CLI is told to read: every one of these CLIs takes a prompt
 /// as an argument, and none of them agree on how to take a file.
-pub fn script(agent: &Agent, workdir: Option<&Path>, prompt: &str) -> String {
+pub fn script(agent: &Agent, workdir: Option<&Path>, prompt: &str, tuning: &Tuning) -> String {
     let quote = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
     let mut script = String::from("#!/bin/sh\n");
     script.push_str(&format!("# Started by e1 for {}\n", agent.kind.label()));
@@ -400,7 +557,7 @@ pub fn script(agent: &Agent, workdir: Option<&Path>, prompt: &str) -> String {
         ));
     }
     script.push_str(&format!("exec {}", quote(&agent.program.to_string_lossy())));
-    for argument in agent.kind.arguments(prompt) {
+    for argument in agent.kind.arguments(prompt, tuning) {
         script.push(' ');
         script.push_str(&quote(&argument));
     }
@@ -415,13 +572,14 @@ pub fn script(agent: &Agent, workdir: Option<&Path>, prompt: &str) -> String {
 pub fn write_script(
     agent: &Agent,
     ask: &Ask,
+    tuning: &Tuning,
     workdir: Option<&Path>,
     directory: &Path,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(directory)?;
     let at = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let path = directory.join(format!("ask-{at}-{}.sh", agent.kind.id()));
-    std::fs::write(&path, script(agent, workdir, &ask.prompt()))?;
+    std::fs::write(&path, script(agent, workdir, &ask.prompt(), tuning))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -439,10 +597,11 @@ pub fn write_script(
 pub fn start(
     agent: &Agent,
     ask: &Ask,
+    tuning: &Tuning,
     workdir: Option<&Path>,
     directory: &Path,
 ) -> std::io::Result<PathBuf> {
-    let path = write_script(agent, ask, workdir, directory)?;
+    let path = write_script(agent, ask, tuning, workdir, directory)?;
     Command::new("open")
         .arg("-a")
         .arg("Terminal")
@@ -557,7 +716,7 @@ mod tests {
     #[test]
     fn every_cli_takes_the_prompt_somewhere() {
         for kind in Kind::ALL {
-            let arguments = kind.arguments("why did this fail?");
+            let arguments = kind.arguments("why did this fail?", &Tuning::default());
             assert!(
                 arguments
                     .iter()
@@ -565,6 +724,118 @@ mod tests {
                 "{} drops the prompt",
                 kind.label()
             );
+        }
+    }
+
+    #[test]
+    fn nothing_picked_puts_nothing_on_the_command_line() {
+        for kind in Kind::ALL {
+            let bare = kind.arguments("why?", &Tuning::default());
+            let blank = kind.arguments(
+                "why?",
+                &Tuning {
+                    model: Some("  ".into()),
+                    effort: Some(String::new()),
+                },
+            );
+            assert_eq!(
+                bare,
+                blank,
+                "{} reads a blank choice as a choice",
+                kind.label()
+            );
+        }
+    }
+
+    #[test]
+    fn a_model_and_an_effort_reach_the_command_line() {
+        let tuning = Tuning {
+            model: Some("opus".into()),
+            effort: Some("xhigh".into()),
+        };
+        assert_eq!(
+            Kind::Claude.arguments("why?", &tuning),
+            ["--model", "opus", "--effort", "xhigh", "why?"]
+        );
+        // Codex has no flag for the effort, and the override it does have
+        // is parsed as TOML.
+        assert_eq!(
+            Kind::Codex.arguments(
+                "why?",
+                &Tuning {
+                    model: Some("gpt-5.6-sol".into()),
+                    effort: Some("high".into()),
+                }
+            ),
+            [
+                "-m",
+                "gpt-5.6-sol",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "why?"
+            ]
+        );
+        // Cursor takes a model and nothing else; the effort is dropped
+        // rather than guessed at.
+        assert_eq!(
+            Kind::Cursor.arguments("why?", &tuning),
+            ["--model", "opus", "why?"]
+        );
+        assert_eq!(
+            Kind::OpenCode.arguments("why?", &tuning),
+            ["run", "--model", "opus", "why?"]
+        );
+    }
+
+    #[test]
+    fn a_model_this_build_never_heard_of_is_passed_through() {
+        let tuning = Tuning {
+            model: Some("gpt-9-whatever-comes-next".into()),
+            ..Tuning::default()
+        };
+        assert!(
+            Kind::Codex
+                .arguments("why?", &tuning)
+                .contains(&"gpt-9-whatever-comes-next".to_string()),
+            "the suggestions are suggestions, not a closed set"
+        );
+    }
+
+    #[test]
+    fn a_cli_offered_an_effort_is_a_cli_that_takes_one() {
+        for kind in Kind::ALL {
+            for effort in kind.efforts() {
+                let arguments = kind.arguments(
+                    "why?",
+                    &Tuning {
+                        effort: Some(effort.id.to_string()),
+                        ..Tuning::default()
+                    },
+                );
+                assert!(
+                    arguments
+                        .iter()
+                        .any(|argument| argument.contains(effort.id)),
+                    "{} offers {} and then drops it",
+                    kind.label(),
+                    effort.id
+                );
+            }
+            for model in kind.models() {
+                let arguments = kind.arguments(
+                    "why?",
+                    &Tuning {
+                        model: Some(model.id.to_string()),
+                        ..Tuning::default()
+                    },
+                );
+                assert!(
+                    arguments.iter().any(|argument| argument == model.id),
+                    "{} offers {} and then drops it",
+                    kind.label(),
+                    model.id
+                );
+            }
         }
     }
 
@@ -610,6 +881,7 @@ mod tests {
             &agent,
             Some(Path::new("/src/it's here")),
             "why did 'this' fail?",
+            &Tuning::default(),
         );
         assert!(script.starts_with("#!/bin/sh\n"));
         assert!(script.contains(r"cd '/src/it'\''s here' || exit 1"));
@@ -623,7 +895,7 @@ mod tests {
             program: PathBuf::from("/opt/homebrew/bin/opencode"),
             version: None,
         };
-        let script = script(&agent, None, "hello");
+        let script = script(&agent, None, "hello", &Tuning::default());
         assert!(!script.contains("cd "));
         assert!(script.contains("'run' 'hello'"), "{script}");
     }
@@ -647,12 +919,24 @@ mod tests {
             ],
             ..Ask::default()
         };
-        let path = write_script(&agent, &ask, None, directory.path()).unwrap();
+        let tuning = Tuning {
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("high".into()),
+        };
+        let path = write_script(&agent, &ask, &tuning, None, directory.path()).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("test result: FAILED"));
         assert!(written.contains("- workflow run: 912"));
         assert!(written.contains("- job: test (2)"));
         assert!(written.contains("why?"));
+        assert!(
+            written.contains(r#"'-m' 'gpt-5.6-sol'"#),
+            "the model is quoted onto the command line: {written}"
+        );
+        assert!(
+            written.contains(r#"'-c' 'model_reasoning_effort="high"'"#),
+            "and so is the effort, TOML quotes and all: {written}"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

@@ -96,6 +96,10 @@ pub struct Store {
     /// Which of them an ask goes to. Remembered in the settings, so it
     /// arrives here from the window rather than being decided here.
     chosen: Option<e1_ui::agents::Kind>,
+    /// How each of them is asked: which model, and how much thinking. Per
+    /// CLI, because the names are, and remembered in the settings the same
+    /// way the choice of CLI is.
+    tuning: HashMap<e1_ui::agents::Kind, e1_ui::agents::Tuning>,
 }
 
 impl EventEmitter<StoreEvent> for Store {}
@@ -133,6 +137,7 @@ impl Store {
             commit_details: HashMap::new(),
             agents: Vec::new(),
             chosen: None,
+            tuning: HashMap::new(),
         }
     }
 
@@ -147,6 +152,24 @@ impl Store {
     /// Remember which CLI an ask goes to.
     pub fn choose_agent(&mut self, kind: e1_ui::agents::Kind, cx: &mut Context<Self>) {
         self.chosen = Some(kind);
+        cx.notify();
+    }
+
+    /// How an ask to this CLI is put: the model it was last given and how
+    /// much thinking it was allowed. Nothing chosen is the usual answer,
+    /// and it means the CLI starts on its own configuration.
+    pub fn tuning(&self, kind: e1_ui::agents::Kind) -> e1_ui::agents::Tuning {
+        self.tuning.get(&kind).cloned().unwrap_or_default()
+    }
+
+    /// Remember how this CLI is asked.
+    pub fn tune(
+        &mut self,
+        kind: e1_ui::agents::Kind,
+        tuning: e1_ui::agents::Tuning,
+        cx: &mut Context<Self>,
+    ) {
+        self.tuning.insert(kind, tuning);
         cx.notify();
     }
 
