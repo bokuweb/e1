@@ -389,6 +389,14 @@ impl Render for ItemList {
             .py_1()
             .into_any_element()
         };
+        let body = match (&self.focus, self.rows.is_empty()) {
+            (Some(focus), false) => crate::fade::fade_in(
+                SharedString::from(format!("list:{}", focus.title())),
+                body,
+                cx,
+            ),
+            _ => body,
+        };
 
         v_flex().size_full().child(body)
     }

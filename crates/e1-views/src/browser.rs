@@ -404,6 +404,12 @@ impl Render for FileBrowser {
             .py_1()
             .into_any_element()
         };
+        let body = match self.repo.clone() {
+            Some(repo) if !self.paths.is_empty() => {
+                crate::fade::fade_in(SharedString::from(format!("files:{repo}")), body, cx)
+            }
+            _ => body,
+        };
 
         v_flex()
             .size_full()

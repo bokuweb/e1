@@ -24,7 +24,10 @@ pub const API: &str = "https://api.github.com";
 
 /// How many rows a page of a listing holds. A hundred is GitHub's ceiling
 /// for every endpoint here, and asking for fewer only means asking again.
-const PAGE_SIZE: usize = 100;
+///
+/// Public because a caller that pages for itself — the history, walked back
+/// as it is scrolled — has to know that a shorter page is the last one.
+pub const PAGE_SIZE: usize = 100;
 
 /// How many pages a listing walks before stopping. At a hundred per page this
 /// is enough for any list a person scrolls, and bounded for the ones nobody
@@ -553,10 +556,13 @@ impl GitHub for Rest {
         Ok(())
     }
 
-    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
-        let pages: Vec<WireCommit> =
-            self.get_pages(&format!("/repos/{repo}/commits?per_page={PAGE_SIZE}"))?;
-        Ok(pages.into_iter().map(WireCommit::into_commit).collect())
+    fn commits(&self, repo: &RepoId, page: u32) -> Result<Vec<Commit>> {
+        // One page, not the walk: the history is read as far as it is
+        // scrolled, and the view asks for the next page when it gets there.
+        let (commits, _): (Vec<WireCommit>, _) = self.get(&format!(
+            "/repos/{repo}/commits?per_page={PAGE_SIZE}&page={page}"
+        ))?;
+        Ok(commits.into_iter().map(WireCommit::into_commit).collect())
     }
 
     fn commit(&self, repo: &RepoId, sha: &str) -> Result<CommitDetail> {

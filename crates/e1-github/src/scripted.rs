@@ -738,8 +738,12 @@ impl GitHub for Scripted {
         Ok(())
     }
 
-    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
+    fn commits(&self, repo: &RepoId, page: u32) -> Result<Vec<Commit>> {
         let _guard = self.guard()?;
+        // Two pages of scripted history, so paging can be seen to work.
+        if page > 2 {
+            return Ok(Vec::new());
+        }
         // Full hashes, and parents that name them: the rail is laid out by
         // matching a parent to a commit, so a short hash here would draw a
         // history where nothing joins up.
@@ -759,7 +763,32 @@ impl GitHub for Scripted {
             parents: parents.iter().map(|parent| parent.to_string()).collect(),
             html_url: format!("https://github.com/{repo}/commit/{sha}"),
         };
-        Ok(vec![
+        if page == 2 {
+            // The second page: what scrolling back reaches.
+            return Ok((1..=4)
+                .map(|n| {
+                    commit(
+                        &format!("{n:040x}"),
+                        &format!("An older commit, number {n}"),
+                        20 + n as i64,
+                        &[],
+                    )
+                })
+                .collect());
+        }
+        // The first page runs past a window's worth, so that reaching the
+        // end of it is something a reader has to scroll to do.
+        let filler: Vec<Commit> = (1..=24)
+            .map(|n| {
+                commit(
+                    &format!("{:040x}", 100 + n),
+                    &format!("A commit from further back, number {n}"),
+                    5 + n as i64,
+                    &[],
+                )
+            })
+            .collect();
+        let mut page_one = vec![
             commit(
                 TIP,
                 "Group a job's log by its steps\n\nThe steps come from the Actions API.",
@@ -776,12 +805,14 @@ impl GitHub for Scripted {
             commit(SIDE, "Build the files column as a tree", 2, &[BASE]),
             commit(BASE, "Rebuild the light theme", 3, &[ROOT]),
             commit(ROOT, "Start a chat before it has a workspace", 5, &[]),
-        ])
+        ];
+        page_one.extend(filler);
+        Ok(page_one)
     }
 
     fn commit(&self, repo: &RepoId, sha: &str) -> Result<CommitDetail> {
         let commit = self
-            .commits(repo)?
+            .commits(repo, 1)?
             .into_iter()
             .find(|commit| commit.sha.starts_with(sha) || sha.starts_with(commit.short()))
             .ok_or(Error::Unsupported("read a commit that is not scripted"))?;
@@ -1238,8 +1269,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ranged.start_line, Some(2));
-        let history = github.commits(&ginka).unwrap();
-        assert_eq!(history.len(), 6);
+        let history = github.commits(&ginka, 1).unwrap();
+        assert_eq!(history.len(), 30, "a page long enough to scroll");
+        assert_eq!(github.commits(&ginka, 2).unwrap().len(), 4, "an older page");
+        assert!(
+            github.commits(&ginka, 3).unwrap().is_empty(),
+            "a short page is the last one"
+        );
         assert!(
             history[1].is_merge(),
             "the second commit brings two lines together"

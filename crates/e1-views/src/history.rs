@@ -20,6 +20,10 @@ const LANE_WIDTH: f32 = 14.;
 /// How wide the rail is before the message starts, whatever the lanes do.
 const RAIL_MIN: f32 = 26.;
 
+/// How many rows before the end of what has been read the next page is
+/// asked for. Enough that the reader does not arrive at a stop.
+const AHEAD: usize = 20;
+
 /// Emitted when the reader picks a commit.
 pub enum HistoryEvent {
     /// Read this commit.
@@ -318,11 +322,27 @@ impl Render for History {
                 .into_any_element();
         }
         let this = cx.entity();
+        let repo = self.repo.clone();
         v_flex()
             .size_full()
-            .child(
+            .child(crate::fade::fade_in(
+                SharedString::from(format!(
+                    "history:{}",
+                    repo.map(|repo| repo.to_string()).unwrap_or_default()
+                )),
                 uniform_list("commits", count, move |range, _window, cx| {
+                    // Asking for the rows near the end is the reader having
+                    // scrolled there. The next page is read after this
+                    // layout rather than during it: a fetch begun mid-layout
+                    // notifies into the frame it is part of.
+                    let near_end = range.end + AHEAD >= count;
                     this.update(cx, |this, cx| {
+                        if near_end && let Some(repo) = this.repo.clone() {
+                            let store = this.store.clone();
+                            cx.defer(move |cx| {
+                                store.update(cx, |store, cx| store.more_commits(repo, cx));
+                            });
+                        }
                         range
                             .map(|index| this.row(index, mono.clone(), cx))
                             .collect()
@@ -330,8 +350,10 @@ impl Render for History {
                 })
                 .flex_1()
                 .size_full()
-                .py_1(),
-            )
+                .py_1()
+                .into_any_element(),
+                cx,
+            ))
             .into_any_element()
     }
 }

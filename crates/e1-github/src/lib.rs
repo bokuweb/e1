@@ -18,7 +18,7 @@ pub use cache::HttpCache;
 use std::collections::HashMap;
 
 pub use model::*;
-pub use rest::Rest;
+pub use rest::{PAGE_SIZE, Rest};
 pub use scripted::Scripted;
 
 use chrono::{DateTime, Utc};
@@ -207,9 +207,10 @@ pub trait GitHub: Send + Sync {
         let _ = (node_id, draft);
         Err(Error::Unsupported("change draft state"))
     }
-    /// A repository's commits on its default branch, newest first.
-    fn commits(&self, repo: &RepoId) -> Result<Vec<Commit>> {
-        let _ = repo;
+    /// One page of a repository's commits on its default branch, newest
+    /// first. Pages count from one; a short page is the last one.
+    fn commits(&self, repo: &RepoId, page: u32) -> Result<Vec<Commit>> {
+        let _ = (repo, page);
         Err(Error::Unsupported("read a repository's history"))
     }
     /// One commit, with the files it touched and their patches.

@@ -167,6 +167,10 @@ impl Radii {
 pub struct Durations {
     /// Hover and press.
     pub quick: u64,
+    /// Content arriving: the fade that carries a fetch's answer onto the
+    /// page. Longer than a hover, because it is a thing appearing rather
+    /// than a thing reacting; shorter than a panel, because nothing moves.
+    pub fade: u64,
     /// Layout and panel transitions.
     pub standard: u64,
 }
@@ -175,6 +179,11 @@ impl Durations {
     /// Hover and press.
     pub fn quick(&self) -> Duration {
         Duration::from_millis(self.quick)
+    }
+
+    /// Content arriving.
+    pub fn fade(&self) -> Duration {
+        Duration::from_millis(self.fade)
     }
 
     /// Layout and panel transitions.

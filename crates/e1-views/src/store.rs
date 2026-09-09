@@ -21,7 +21,7 @@ use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
 use e1_ui::{Fetch, Focus, Section};
 use gpui::{AppContext as _, Context, EventEmitter};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,8 +80,13 @@ pub struct Store {
     jobs: HashMap<(RepoId, u64), Fetch<Job>>,
     /// How the checks stand on each pull a list has shown.
     statuses: HashMap<(RepoId, u64), CheckState>,
-    /// Each repository's history, once it has been asked for.
+    /// Each repository's history, once it has been asked for. Grown a page
+    /// at a time as the reader scrolls back.
     commits: HashMap<RepoId, Fetch<Vec<Commit>>>,
+    /// How many pages of each history have landed.
+    commit_pages: HashMap<RepoId, u32>,
+    /// The histories that have given everything they have.
+    commits_ended: HashSet<RepoId>,
     /// Each commit that has been read, by repository and hash.
     commit_details: HashMap<(RepoId, String), Fetch<CommitDetail>>,
     /// The coding-agent CLIs on this machine, once they have been looked
@@ -123,6 +128,8 @@ impl Store {
             jobs: HashMap::new(),
             statuses: HashMap::new(),
             commits: HashMap::new(),
+            commit_pages: HashMap::new(),
+            commits_ended: HashSet::new(),
             commit_details: HashMap::new(),
             agents: Vec::new(),
             chosen: None,
@@ -174,17 +181,13 @@ impl Store {
         self.commits.get(repo)
     }
 
-    /// Fetch a repository's history.
+    /// Fetch a repository's history from the top, forgetting what was read
+    /// before: what a refresh does.
     pub fn load_commits(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        self.commit_pages.remove(&repo);
+        self.commits_ended.remove(&repo);
         self.commits.entry(repo.clone()).or_default().begin();
-        let key = repo.clone();
-        self.fetch(
-            cx,
-            move |github| github.commits(&repo),
-            move |this, result, _| {
-                this.commits.entry(key).or_default().finish(result);
-            },
-        );
+        self.read_commits(repo, 1, cx);
     }
 
     /// Fetch a repository's history only if it never has been.
@@ -192,6 +195,61 @@ impl Store {
         if self.commits.get(&repo).is_none_or(Fetch::is_idle) {
             self.load_commits(repo, cx);
         }
+    }
+
+    /// Whether the whole history has been read.
+    pub fn commits_ended(&self, repo: &RepoId) -> bool {
+        self.commits_ended.contains(repo)
+    }
+
+    /// Read the next page of a history, if there is one and none is on its
+    /// way. What the view asks for when the reader reaches the bottom.
+    pub fn more_commits(&mut self, repo: RepoId, cx: &mut Context<Self>) {
+        let reading = self
+            .commits
+            .get(&repo)
+            .is_some_and(|fetch| fetch.is_loading());
+        if reading || self.commits_ended.contains(&repo) {
+            return;
+        }
+        let read = self.commit_pages.get(&repo).copied().unwrap_or_default();
+        if read == 0 {
+            return self.ensure_commits(repo, cx);
+        }
+        self.commits.entry(repo.clone()).or_default().begin();
+        self.read_commits(repo, read + 1, cx);
+    }
+
+    /// One page, appended to what is already there.
+    fn read_commits(&mut self, repo: RepoId, page: u32, cx: &mut Context<Self>) {
+        let key = repo.clone();
+        self.fetch(
+            cx,
+            move |github| github.commits(&repo, page),
+            move |this, result, _| {
+                match result {
+                    Ok(more) => {
+                        // A page shorter than a full one is the last: there
+                        // is no count to ask for and no cursor to follow.
+                        if more.len() < e1_github::PAGE_SIZE {
+                            this.commits_ended.insert(key.clone());
+                        }
+                        tracing::debug!(page, read = more.len(), "a page of history");
+                        this.commit_pages.insert(key.clone(), page);
+                        let held = this.commits.entry(key).or_default();
+                        let mut all = held.value().cloned().unwrap_or_default();
+                        if page == 1 {
+                            all.clear();
+                        }
+                        all.extend(more);
+                        held.finish(Ok(all));
+                    }
+                    Err(error) => {
+                        this.commits.entry(key).or_default().finish(Err(error));
+                    }
+                }
+            },
+        );
     }
 
     /// One commit with its files, if it has ever been asked for.
