@@ -29,10 +29,17 @@ pub const API: &str = "https://api.github.com";
 /// as it is scrolled — has to know that a shorter page is the last one.
 pub const PAGE_SIZE: usize = 100;
 
-/// How many pages a listing walks before stopping. At a hundred per page this
-/// is enough for any list a person scrolls, and bounded for the ones nobody
-/// does.
-const PAGE_CAP: usize = 3;
+/// How many rows GitHub will return on one notifications page.
+///
+/// Unlike the other listings, `/notifications` silently caps this at fifty.
+const NOTIFICATION_PAGE_SIZE: usize = 50;
+
+/// How many pages a listing walks before stopping.
+///
+/// Following the `next` link normally ends the walk. This high ceiling is a
+/// guard against a broken or circular link, not a product limit: it allows up
+/// to 5,000 notifications or 10,000 rows from the other listings.
+const PAGE_CAP: usize = 100;
 
 /// How long one request may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -229,20 +236,30 @@ impl Rest {
 
     /// Every page of a listing, up to [`PAGE_CAP`].
     fn get_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
-        let mut collected = Vec::new();
-        let mut next = Some(path.to_string());
-        let mut pages = 0;
-        while let Some(url) = next.take() {
-            if pages == PAGE_CAP {
-                break;
-            }
-            pages += 1;
-            let (page, following): (Vec<T>, _) = self.get(&url)?;
-            collected.extend(page);
-            next = following;
-        }
-        Ok(collected)
+        walk_pages(path, |url| self.get(url))
     }
+}
+
+/// Follow a listing's `next` links while keeping one ceiling for a broken
+/// chain. The request itself is injected so the walk is testable without a
+/// network or a GitHub token.
+fn walk_pages<T, E>(
+    path: &str,
+    mut get: impl FnMut(&str) -> std::result::Result<(Vec<T>, Option<String>), E>,
+) -> std::result::Result<Vec<T>, E> {
+    let mut collected = Vec::new();
+    let mut next = Some(path.to_string());
+    let mut pages = 0;
+    while let Some(url) = next.take() {
+        if pages == PAGE_CAP {
+            break;
+        }
+        pages += 1;
+        let (page, following) = get(&url)?;
+        collected.extend(page);
+        next = following;
+    }
+    Ok(collected)
 }
 
 /// The `next` URL out of a `Link` header, if it has one.
@@ -303,7 +320,7 @@ impl GitHub for Rest {
 
     fn notifications(&self) -> Result<Vec<Notification>> {
         let pages: Vec<WireNotification> =
-            self.get_pages(&format!("/notifications?per_page={PAGE_SIZE}"))?;
+            self.get_pages(&format!("/notifications?per_page={NOTIFICATION_PAGE_SIZE}"))?;
         Ok(pages
             .into_iter()
             .filter_map(WireNotification::into_notification)
@@ -770,5 +787,15 @@ mod tests {
             reset_at(1_788_566_400).map(|at| at.to_rfc3339()),
             Some("2026-09-05T00:00:00+00:00".to_string())
         );
+    }
+
+    #[test]
+    fn a_listing_walks_beyond_three_pages() {
+        let mut page = 0;
+        let rows = walk_pages("page-1", |_| {
+            page += 1;
+            Ok::<_, ()>((vec![page], (page < 4).then(|| format!("page-{}", page + 1))))
+        });
+        assert_eq!(rows, Ok(vec![1, 2, 3, 4]));
     }
 }
