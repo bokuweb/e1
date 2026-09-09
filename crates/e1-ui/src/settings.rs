@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The window's own settings.
@@ -20,6 +21,19 @@ pub struct AppSettings {
     /// `None` until one is picked, when the first one found is used.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Which model each CLI is asked with, by [`crate::agents::Kind::id`]
+    /// and then whatever that CLI calls the model (`opus`, `gpt-5.6-sol`).
+    /// Per CLI because the names are: one field would be a name that means
+    /// nothing to the next one. A CLI with no entry is started with no
+    /// model on its command line, which leaves its own configuration
+    /// alone. Free-form, so a name written here by hand is passed through
+    /// whether this build has heard of it or not.
+    #[serde(default)]
+    pub agent_models: BTreeMap<String, String>,
+    /// How much thinking each CLI is asked for, the same way (`high`,
+    /// `xhigh`). Only the CLIs that take one have an entry.
+    #[serde(default)]
+    pub agent_efforts: BTreeMap<String, String>,
     /// Whether the navigation column is showing.
     pub sidebar_open: bool,
     /// Its width, kept while it is closed.
@@ -41,6 +55,8 @@ impl Default for AppSettings {
         Self {
             appearance: None,
             agent: None,
+            agent_models: BTreeMap::new(),
+            agent_efforts: BTreeMap::new(),
             // The defaults in docs/ui.md §2. Unlike Ginka, the right panel
             // starts open: it is the reading pane, and there is something to
             // read the moment a row is picked.
@@ -173,6 +189,9 @@ mod tests {
         let settings = AppSettings {
             last_repo: Some("bokuweb/e1".into()),
             sidebar_width: 300.0,
+            agent: Some("codex".into()),
+            agent_models: BTreeMap::from([("codex".to_string(), "gpt-5.6-sol".to_string())]),
+            agent_efforts: BTreeMap::from([("codex".to_string(), "high".to_string())]),
             ..AppSettings::default()
         };
         save(&path, &settings).unwrap();

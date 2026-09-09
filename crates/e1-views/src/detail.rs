@@ -71,6 +71,9 @@ pub enum DetailEvent {
     /// The reader picked which agent CLI an ask goes to. The window keeps
     /// it, because the window owns the settings.
     AgentChosen(e1_ui::agents::Kind),
+    /// They picked which model that CLI is asked with, or how much
+    /// thinking it is allowed. Kept the same way, and per CLI.
+    Tuned(e1_ui::agents::Kind, e1_ui::agents::Tuning),
 }
 
 impl EventEmitter<DetailEvent> for Detail {}
@@ -678,6 +681,21 @@ impl Detail {
         }
     }
 
+    /// Remember which model this CLI is asked with, and how much thinking
+    /// it is allowed. Kept in the store for this ask and in the settings
+    /// for the next one, exactly as the choice of CLI is.
+    fn tune(
+        &mut self,
+        kind: e1_ui::agents::Kind,
+        tuning: e1_ui::agents::Tuning,
+        cx: &mut Context<Self>,
+    ) {
+        self.store
+            .update(cx, |store, cx| store.tune(kind, tuning.clone(), cx));
+        cx.emit(DetailEvent::Tuned(kind, tuning));
+        cx.notify();
+    }
+
     /// Hand the ask to one of the CLIs and start a session on it.
     fn send_ask(&mut self, agent: e1_ui::agents::Agent, cx: &mut Context<Self>) -> bool {
         let Some(ask) = self.ask(cx) else {
@@ -695,29 +713,31 @@ impl Detail {
         let directory = e1_ui::Paths::from_env()
             .map(|paths| paths.root().join("asks"))
             .unwrap_or_else(|_| std::env::temp_dir().join("e1-asks"));
-        let started = match e1_ui::agents::start(&agent, &ask, workdir.as_deref(), &directory) {
-            Ok(path) => {
-                tracing::info!(?path, agent = agent.kind.id(), "started an agent");
-                // The pick has been asked about; a fresh one starts a fresh
-                // ask.
-                self.picked_text = None;
-                self.log_selection = None;
-                self.code_selection = None;
-                self.diff_selection = None;
-                self.offer_at = None;
-                self.ask_said = None;
-                true
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not start an agent");
-                // Said inside the dialog, which stays open: there is nowhere
-                // else left to say it, and a failure the reader cannot see
-                // is a click that did nothing.
-                self.ask_said =
-                    Some(rust_i18n::t!("ask.failed", detail = error.to_string()).to_string());
-                false
-            }
-        };
+        let tuning = self.store.read(cx).tuning(agent.kind);
+        let started =
+            match e1_ui::agents::start(&agent, &ask, &tuning, workdir.as_deref(), &directory) {
+                Ok(path) => {
+                    tracing::info!(?path, agent = agent.kind.id(), "started an agent");
+                    // The pick has been asked about; a fresh one starts a fresh
+                    // ask.
+                    self.picked_text = None;
+                    self.log_selection = None;
+                    self.code_selection = None;
+                    self.diff_selection = None;
+                    self.offer_at = None;
+                    self.ask_said = None;
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not start an agent");
+                    // Said inside the dialog, which stays open: there is nowhere
+                    // else left to say it, and a failure the reader cannot see
+                    // is a click that did nothing.
+                    self.ask_said =
+                        Some(rust_i18n::t!("ask.failed", detail = error.to_string()).to_string());
+                    false
+                }
+            };
         cx.notify();
         started
     }
@@ -3800,6 +3820,96 @@ impl Detail {
                         .map(|(index, agent)| row(agent, index + 1, false)),
                 );
             }
+            // Which model, and how much thinking: the choices the CLI the
+            // ask is going to takes, as chips above the row that sends.
+            // The first chip is always the CLI's own default, which puts
+            // nothing on the command line; a CLI that takes neither — or
+            // that names its thinking in its model names, as Cursor does —
+            // gets no strip at all.
+            let tuning = chosen
+                .map(|kind| store.read(cx).tuning(kind))
+                .unwrap_or_default();
+            let mut strips: Vec<AnyElement> = Vec::new();
+            if let Some(kind) = chosen {
+                let mut strip =
+                    |group: &'static str,
+                     title: String,
+                     choices: &'static [e1_ui::agents::Choice],
+                     picked: Option<String>,
+                     set: fn(&mut e1_ui::agents::Tuning, Option<String>)| {
+                        if choices.is_empty() {
+                            return;
+                        }
+                        let chips: Vec<AnyElement> = std::iter::once(None)
+                            .chain(choices.iter().map(Some))
+                            .enumerate()
+                            .map(|(index, choice)| {
+                                let (label, id) = match choice {
+                                    Some(choice) => {
+                                        (choice.label.to_string(), Some(choice.id.to_string()))
+                                    }
+                                    None => (rust_i18n::t!("ask.default").to_string(), None),
+                                };
+                                let marked = id == picked;
+                                let this = this.clone();
+                                let mut next = tuning.clone();
+                                set(&mut next, id);
+                                div()
+                                    .id((group, index))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(tokens.radius.control()))
+                                    .cursor_pointer()
+                                    .border_1()
+                                    .text_size(px(11.5))
+                                    .border_color(if marked {
+                                        tokens.colors().accent
+                                    } else {
+                                        tokens.colors().border_subtle
+                                    })
+                                    .text_color(if marked {
+                                        tokens.colors().accent
+                                    } else {
+                                        tokens.colors().text_secondary
+                                    })
+                                    .hover(|this| this.bg(tokens.colors().row_hover()))
+                                    .child(label)
+                                    .on_click(move |_, _, cx| {
+                                        let next = next.clone();
+                                        this.update(cx, |this, cx| this.tune(kind, next, cx));
+                                    })
+                                    .into_any_element()
+                            })
+                            .collect();
+                        strips.push(
+                            v_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(tokens.colors().text_muted)
+                                        .child(title),
+                                )
+                                .child(h_flex().w_full().flex_wrap().gap_1().children(chips))
+                                .into_any_element(),
+                        );
+                    };
+                strip(
+                    "ask-model",
+                    rust_i18n::t!("ask.model").to_string(),
+                    kind.models(),
+                    tuning.model().map(str::to_string),
+                    |tuning, value| tuning.model = value,
+                );
+                strip(
+                    "ask-effort",
+                    rust_i18n::t!("ask.effort").to_string(),
+                    kind.efforts(),
+                    tuning.effort().map(str::to_string),
+                    |tuning, value| tuning.effort = value,
+                );
+            }
             let excerpt = ask.excerpt.clone().unwrap_or_default();
             let excerpt_open = this.read(cx).excerpt_open;
             let this_for_fold = this.clone();
@@ -3899,6 +4009,7 @@ impl Detail {
                                     .children(facts),
                             )
                         })
+                        .children(strips)
                         .children(this.read(cx).ask_said.clone().map(|said| {
                             div()
                                 .w_full()
