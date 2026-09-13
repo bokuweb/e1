@@ -10,10 +10,13 @@ their own.
 ## 1. Distribution decision
 
 The first supported distribution is a universal macOS app in a notarized disk
-image attached to a GitHub Release:
+image attached to a GitHub Release. The same release also carries the archive
+existing installations consume through Sparkle:
 
 ```text
 e1-v0.1.0-macos-universal.dmg
+e1-v0.1.0-macos-universal.zip
+appcast.xml
 SHA256SUMS
 ```
 
@@ -22,14 +25,108 @@ on both Apple silicon and Intel. A package installer is unnecessary because the
 app has one executable and keeps its mutable data under `~/.e1`; the reader can
 install it by dragging it to Applications.
 
-The Mac App Store, Homebrew cask and automatic updates are later distribution
-channels, not conditions of the first release. The initial app checks for no
-updates and a new version is installed by replacing the app. When automatic
-updates are justified, use Sparkle with an Ed25519-signed appcast and add a
-signed ZIP artifact; do not make the Developer ID certificate or HTTPS the
-update authenticity boundary.
+The Mac App Store and Homebrew cask are later distribution channels. Existing
+installations update through Sparkle from the first supported release; the DMG
+remains the artifact for a new installation. Sparkle's Ed25519 signature is the
+update authenticity boundary. The Developer ID signature, notarization and
+HTTPS remain independently necessary, but none substitutes for that signature.
 
-## 2. Trust model
+## 2. Automatic update contract
+
+The implementation follows [Waku's release and update
+shape](https://github.com/egoist/waku/blob/main/RELEASING.md): embed a pinned
+Sparkle framework, publish a signed appcast and ZIP archives, keep old archives
+available for binary deltas, and let Sparkle own download, verification,
+replacement and relaunch. e1 deliberately starts with Sparkle's standard UI
+instead of Waku's custom user driver. A custom in-window presentation is useful
+only after the release path itself has survived an update from an older build.
+
+### 2.1 Runtime boundary
+
+The updater belongs to the standalone application, not to `e1-views`.
+`e1-views` is mounted inside Ginka later and must never acquire the ability to
+replace its host application. The macOS bridge therefore lives in a small
+`e1-updater-macos` crate used only by the root binary. Its safe public surface is
+limited to initialization, an explicit check and Sparkle's persisted automatic
+check preference.
+
+Sparkle is loaded from
+`e1.app/Contents/Frameworks/Sparkle.framework` at runtime. Initialization
+returns no updater when the framework is absent, when the executable is not in
+a supported app bundle, or in a debug build. Consequently `cargo run` cannot
+offer to replace itself with a production build. `E1_FORCE_UPDATER=1` may
+enable the real bridge in a development bundle for integration testing, but it
+does not make a bare binary updateable.
+
+The workspace denies unsafe Rust. Objective-C messaging and loading the
+framework necessarily cross an unsafe FFI boundary, so that exception is
+contained in `e1-updater-macos`; every unsafe operation documents the lifetime
+and main-thread condition it relies on. No unsafe code enters `e1-views`,
+`e1-ui` or `e1-github`.
+
+On startup the application creates the updater and registers **Check for
+Updates...** in the application menu only when initialization succeeds. The
+menu action uses Sparkle's standard user-initiated window. Sparkle owns its
+first-run consent prompt and automatic-check preference. Once the reader has
+enabled automatic checks, e1 requests one silent background check per launch
+and then leaves the schedule to Sparkle.
+
+A later UI pass may expose three states in the standalone `Shell`: idle,
+available and updating. An automatic result may then appear as an update button
+in the sidebar footer, while an explicit menu action continues to use Sparkle's
+standard window. The state is passed into `Shell` by the root binary; it is not
+a global assumed by embeddable views.
+
+### 2.2 Bundle and signing
+
+The packaging script pins the Sparkle version and the SHA-256 digest of its
+upstream distribution together. It downloads and caches that distribution,
+copies `Sparkle.framework` into the app and removes development-only headers
+and modules. e1 is not App-Sandboxed, so unused Sparkle XPC services are also
+removed.
+
+`Info.plist` contains:
+
+- `SUFeedURL`, an HTTPS URL for the stable `appcast.xml` location; and
+- `SUPublicEDKey`, the public half of e1's dedicated Sparkle Ed25519 key.
+
+The private half never enters the repository or an artifact. A developer keeps
+it in the login keychain; CI receives it as `SPARKLE_PRIVATE_KEY` from the
+protected `release` environment and passes it to `generate_appcast` over
+standard input. The release job verifies that every appcast enclosure has an
+Ed25519 signature, so a wrong or missing key cannot silently publish an
+unusable feed. The private key needs an offline backup: losing it strands every
+installed build that trusts its public half.
+
+Nested Sparkle executables are signed first, followed by the framework, e1's
+executable and the app bundle. They use the same Developer ID identity because
+Hardened Runtime library validation otherwise rejects the embedded framework.
+The app and DMG are notarized and stapled before the stapled app is archived as
+the ZIP Sparkle installs.
+
+### 2.3 Publication topology
+
+GitHub Releases remain the release record and the manual publication gate.
+Cloudflare R2 is the update-serving surface because it gives the appcast a
+stable URL, explicit cache policy and durable access to old archives. A custom
+release domain can front the bucket later without changing the contract.
+
+A published GitHub Release triggers a separate sync workflow. It uploads
+versioned ZIPs, release notes and generated delta files with immutable cache
+headers, then uploads `appcast.xml` last with a short cache lifetime. Publishing
+the feed last ensures it never points at an archive that is not yet reachable.
+Old ZIPs remain in the bucket so `generate_appcast` can build deltas for recent
+versions and far-behind installations can fall back to a full archive.
+
+The DMG and ZIP serve different readers:
+
+- the notarized DMG is downloaded by a person installing e1; and
+- the notarized ZIP and any deltas are referenced only by the signed appcast.
+
+The feed and archive names are permanent once published. A failed sync may be
+retried, but a versioned archive is never replaced with different bytes.
+
+## 3. Trust model
 
 Direct macOS distribution has three separate trust mechanisms:
 
@@ -50,7 +147,7 @@ Unsigned builds remain useful for contributors, but they are development
 artifacts. A public build without Developer ID and notarization makes readers
 bypass Gatekeeper and is not a supported release.
 
-## 3. One-time Apple setup
+## 4. One-time Apple and update setup
 
 Before the first preview release:
 
@@ -67,6 +164,10 @@ Before the first preview release:
 - Create a protected GitHub Actions environment named `release`. Limit it to
   version tags and require a maintainer's approval before its secrets become
   available.
+- Create the R2 bucket and credentials used only to write the release prefix.
+- Generate a dedicated Sparkle Ed25519 key pair, put its public half in
+  `Info.plist`, store its private half in the release environment, and keep an
+  offline recovery copy.
 
 The release environment holds these secrets:
 
@@ -79,13 +180,18 @@ The release environment holds these secrets:
 | `APPLE_NOTARY_KEY_ID` | API key ID |
 | `APPLE_NOTARY_ISSUER_ID` | API issuer ID |
 | `APPLE_TEAM_ID` | Apple developer team ID, used for validation and diagnostics |
+| `SPARKLE_PRIVATE_KEY` | Sparkle Ed25519 private key, supplied to `generate_appcast` over stdin |
+| `R2_ACCESS_KEY_ID` | Access key for the release bucket |
+| `R2_SECRET_ACCESS_KEY` | Secret key for the release bucket |
+| `R2_ENDPOINT` | Account-specific R2 S3 endpoint |
+| `R2_BUCKET` | Bucket that serves update archives and the appcast |
 
 The certificate and notary key are different credentials. Keep both out of the
 repository and action artifacts. Import the certificate into an ephemeral
 keychain on the hosted runner, unlock that keychain only for the signing step,
 and delete it in an `always()` cleanup step.
 
-## 4. Bundle contract
+## 5. Bundle contract
 
 Packaging is an explicit repository script rather than hidden in an IDE. It
 constructs this bundle:
@@ -109,7 +215,7 @@ before the first release.
 - `CFBundleName` and `CFBundleDisplayName = e1`
 - `CFBundlePackageType = APPL`
 - `CFBundleShortVersionString = <Cargo package version>`
-- `CFBundleVersion = <monotonically increasing CI build number>`
+- `CFBundleVersion = major * 1,000,000 + minor * 1,000 + patch`
 - `LSMinimumSystemVersion = 11.0`
 - `CFBundleIconFile = AppIcon`
 - `NSHighResolutionCapable = true`
@@ -126,12 +232,14 @@ or Apple Events requirement. Add an entitlement only when a concrete feature
 needs it, with a signed-bundle smoke test. Hardened Runtime is enabled by
 `codesign --options runtime`, with a secure timestamp.
 
-## 5. Version and tag contract
+## 6. Version and tag contract
 
 The workspace package version is the source of truth. Stable releases use
 three-integer SemVer versions initially; for example, Cargo version `0.1.0`
-maps to tag `v0.1.0` and short app version `0.1.0`. A release job refuses a tag
-that does not exactly match the Cargo version.
+maps to tag `v0.1.0`, short app version `0.1.0` and bundle version `1000`.
+Minor and patch components must each fit in three decimal digits. This mapping
+keeps Sparkle's build-number comparison monotonic and reproducible. A release
+job refuses a tag that does not exactly match the Cargo version.
 
 Every release starts as a normal release-preparation pull request that:
 
@@ -150,7 +258,7 @@ Prerelease version mapping needs a separate decision before the first beta:
 Apple's bundle version fields are more restrictive than Cargo SemVer. Do not
 invent a mapping inside the workflow.
 
-## 6. Automated release job
+## 7. Automated release jobs
 
 Add `.github/workflows/release.yml`, triggered only by `v*` tag pushes and also
 available as a dry-run `workflow_dispatch` that cannot access release secrets.
@@ -183,7 +291,9 @@ validate tag/version and clean source
                             │
           mount DMG; Gatekeeper and launch smoke tests
                             │
-           checksum; create draft GitHub Release
+       staple app; archive ZIP; generate candidate appcast
+                            │
+          checksum; create draft GitHub Release
 ```
 
 Use `cargo build --release --locked` for `aarch64-apple-darwin` and
@@ -205,12 +315,19 @@ run `spctl --assess --type execute` against its app, copy the app to a temporary
 directory and launch it once with `E1_DEMO=1`. This smoke test must use the
 signed bundle rather than `cargo run`.
 
-Generate `SHA256SUMS` only after stapling, because stapling changes the DMG.
-Upload only the final DMG, checksums and release notes. Intermediate unsigned
-apps, private keys, temporary keychains and notarization upload archives must
-never become workflow artifacts.
+Generate `SHA256SUMS` only after stapling, because stapling changes the DMG and
+app. Upload only the final DMG, ZIP, candidate appcast, checksums and release
+notes. Intermediate unsigned apps, private keys, temporary keychains and
+notarization upload archives must never become workflow artifacts.
 
-## 7. Checks before publishing the draft
+Add `.github/workflows/sync-release.yml`, triggered when the draft is
+published. It downloads the release artifacts, fetches a bounded history of
+old ZIPs from R2, regenerates the signed appcast and deltas, verifies every
+enclosure, uploads immutable files first and `appcast.xml` last. It has no
+Developer ID or notarization credential; it receives only the Sparkle and R2
+secrets it needs.
+
+## 8. Checks before publishing the draft
 
 CI proves the mechanical contract. A maintainer completes the release by
 checking the draft on a second Mac account or machine:
@@ -224,15 +341,22 @@ checking the draft on a second Mac account or machine:
 - repeat a launch without network access to cover the stapled ticket and cached
   startup; and
 - on one Intel Mac for the first release, confirm the Intel slice actually runs.
+- from an installed older build, choose **Check for Updates...**, install the
+  draft candidate from a temporary feed, and confirm the replacement is the
+  expected universal, signed and notarized version.
 
 Publish the existing draft after those checks. If notarization or installation
 fails, leave the draft unpublished and preserve the notary log in the workflow
 log after inspecting it for secrets.
 
-## 8. Failure and rotation rules
+## 9. Failure and rotation rules
 
 - A signing or notarization failure publishes nothing. There is no unsigned
   fallback release.
+- The sync workflow uploads `appcast.xml` last. A failure before that point
+  leaves existing installations on the previous valid feed.
+- A release archive with a published URL is immutable. Changed bytes require a
+  new version even when the preceding release cannot update successfully.
 - A partially created draft is safe to delete; a published tag or release is
   never silently replaced.
 - If the Developer ID private key may have leaked, revoke it with Apple, remove
@@ -244,15 +368,22 @@ log after inspecting it for secrets.
   expire. Existing validly signed apps can continue to run after a normal
   certificate expiry, but new releases need a current certificate.
 
-## 9. Implementation order
+## 10. Implementation order
 
 1. Decide the licence (roadmap Q3), publisher identity and final bundle ID.
 2. Create the application icon and `Info.plist` template.
-3. Add a local packaging script with ad-hoc signing and a DMG smoke test; keep
-   all output under `target/dist/`.
-4. Add a CI dry run that builds and verifies the universal unsigned/ad-hoc
-   artifact without release secrets.
-5. Provision Apple and GitHub environment credentials.
-6. Add signed tag releases, notarization and the manual publish gate.
-7. After the first stable release, decide whether demand justifies Sparkle and
-   a Homebrew cask.
+3. Add a local packaging script with ad-hoc signing, a pinned Sparkle framework
+   and a DMG smoke test; keep all output under `target/dist/`.
+4. Add `e1-updater-macos` and the standard **Check for Updates...** flow,
+   dormant in ordinary debug builds.
+5. Generate a signed ZIP and appcast locally, then prove an update from an
+   older development bundle before automating publication.
+6. Add a CI dry run that builds and verifies the universal unsigned/ad-hoc
+   artifacts without release secrets.
+7. Provision Apple, Sparkle, GitHub and R2 credentials.
+8. Add signed tag releases, notarization and the manual publish gate.
+9. Add the publish-triggered R2 sync, retaining old ZIPs and publishing the
+   verified appcast last.
+10. After the first production update succeeds, consider the sidebar status,
+    tune the retained delta history, and add a settings toggle. A Homebrew
+    cask remains independent.

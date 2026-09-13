@@ -169,7 +169,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 | **M3 Act** | Comment, close, reopen, merge with a method (landed); approve / request changes (landed); labels, assignees and projects edited in place (landed — projects over GraphQL, which needs the `project` scope); the checks and the merge as GitHub's card (landed); draft and ready for review (landed, GraphQL); edit title and body; `⌘K` palette over every action and repository | in progress |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
-| **M6 Ship** | Universal macOS app; Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; installation and Keychain smoke tests (`docs/releasing.md`) | |
+| **M6 Ship** | Universal macOS app; Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; Sparkle updates through a signed appcast and R2; installation, update and Keychain smoke tests (`docs/releasing.md`) | |
 
 ## 6. Quality bars
 
@@ -190,7 +190,8 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 
 | Date | Decision | Why |
 | --- | --- | --- |
-| 2026-09-07 | The first release is a universal, Developer ID-signed and notarized DMG on GitHub Releases | A one-binary app does not need an installer, while signing, Hardened Runtime, notarization and a stapled ticket give a direct download the normal Gatekeeper path. The exact flow and secret boundary live in `docs/releasing.md`; App Store, Homebrew and Sparkle remain later channels. |
+| 2026-09-13 | Automatic updates follow Waku's Sparkle contract: GitHub Releases are the publication gate, R2 serves an Ed25519-signed appcast and immutable ZIPs, and the updater stays in the standalone binary boundary | Sparkle owns safe replacement and relaunch, old archives enable efficient deltas, and keeping the bridge out of `e1-views` prevents an embedded GitHub surface from trying to update Ginka. The unavoidable Objective-C FFI and its scoped unsafe exception live in a dedicated macOS updater crate. The standard Sparkle UI ships before any custom sidebar presentation. |
+| 2026-09-07 | The first release is a universal, Developer ID-signed and notarized DMG on GitHub Releases | A one-binary app does not need an installer, while signing, Hardened Runtime, notarization and a stapled ticket give a direct download the normal Gatekeeper path. The exact flow and secret boundary live in `docs/releasing.md`. App Store, Homebrew and automatic updates were deferred at this point; the 2026-09-13 decision brings Sparkle into M6. |
 | 2026-09-05 | Views live in `e1-views`, a library, not in the binary | Embedding (E1). Ginka keeps views in its binary because nothing mounts them; here something will. |
 | 2026-09-05 | The `GitHub` trait is blocking, run on the background executor | A host that owns state behind a socket can implement a blocking call with `block_on`; an async trait would commit both apps to one executor (E2, E3). |
 | 2026-09-05 | `ureq` for HTTP, no tokio | E3. Every async client on crates.io brings tokio; Ginka runs on smol. |
