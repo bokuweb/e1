@@ -18,6 +18,7 @@ pub mod detail;
 pub mod fade;
 pub mod history;
 pub mod list;
+pub mod palette;
 pub mod shell;
 pub mod sidebar;
 pub mod signin;
