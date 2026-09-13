@@ -119,6 +119,11 @@ It opens Sparkle's standard window, which owns update progress, release notes,
 consent and errors. A bare `cargo run` build has no update item. The embeddable
 views draw none of this: Ginka owns its own application lifecycle.
 
+The standalone app icon follows the macOS 1024 px icon grid: an 824 px rounded
+tile is centred on a transparent canvas, and the e1 mark occupies roughly half
+the tile. The transparent safe area keeps its perceived Dock size aligned with
+system applications instead of presenting as a full-bleed square.
+
 ## 4. Component mapping
 
 | Region | Component |
