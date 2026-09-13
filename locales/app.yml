@@ -244,9 +244,19 @@ file.lines:
 search.title:
   en: Search
   ja: 検索
-search.placeholder:
-  en: Search issues and pull requests…
-  ja: Issue と PR を検索…
+
+palette.placeholder:
+  en: Jump to a repository, or search GitHub…
+  ja: リポジトリへ移動、または GitHub を検索…
+palette.sections:
+  en: Sections
+  ja: セクション
+palette.search:
+  en: Search
+  ja: 検索
+palette.search_for:
+  en: Search GitHub for “%{query}”
+  ja: 「%{query}」を GitHub で検索
 
 detail.comment.placeholder:
   en: Leave a comment…

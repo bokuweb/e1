@@ -10,24 +10,27 @@ use crate::browser::{BrowserEvent, FileBrowser};
 use crate::detail::{Detail, DetailEvent};
 use crate::history::{History, HistoryEvent};
 use crate::list::{ItemEvent, ItemList};
+use crate::palette::{Palette, PaletteEvent};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::signin::{SignIn, SignInEvent};
 use crate::store::{ItemKey, Store, StoreEvent};
 use e1_github::auth::{Keychain, Source};
 use e1_github::{GitHub, HttpCache, Rest, Scripted, StatusFilter};
 use e1_ui::Mode;
+use e1_ui::palette::Pick;
 use e1_ui::settings::{self, AppSettings, Appearance};
 use e1_ui::theme::ThemeAppearance;
 use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{Icon, IconName, InteractiveElementExt as _, StyledExt as _, h_flex, v_flex};
+use gpui_component::{
+    Icon, IconName, InteractiveElementExt as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use std::sync::Arc;
 use std::time::Instant;
 
-actions!(e1, [ToggleSidebar, ToggleRightPanel, Refresh]);
+actions!(e1, [ToggleSidebar, ToggleRightPanel, Refresh, OpenPalette]);
 
 /// The key context the shell's chords are bound in.
 const CONTEXT: &str = "E1Shell";
@@ -76,6 +79,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-r", Refresh, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-r", Refresh, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-k", OpenPalette, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-k", OpenPalette, Some(CONTEXT)),
     ]);
 }
 
@@ -92,8 +99,8 @@ pub struct Shell {
     /// The centre column as a repository's commits.
     history: Entity<History>,
     sign_in: Entity<SignIn>,
-    /// The search box in the centre strip.
-    search: Entity<InputState>,
+    /// Everywhere the window can go, behind ⌘K.
+    palette: Entity<Palette>,
     /// What the centre column was last pointed at.
     current: Option<Focus>,
     /// The appearance changed and the theme has to be installed at the next
@@ -147,9 +154,7 @@ impl Shell {
         let sign_in = cx.new(|_| SignIn::new());
         let browser = cx.new(|cx| FileBrowser::new(store.clone(), window, cx));
         let history = cx.new(|cx| History::new(store.clone(), cx));
-        let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rust_i18n::t!("search.placeholder").to_string())
-        });
+        let palette = cx.new(|cx| Palette::new(store.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let list = cx.new(|cx| ItemList::new(store.clone(), cx));
         let detail = cx.new(|cx| Detail::new(store.clone(), window, cx));
@@ -198,16 +203,9 @@ impl Shell {
                 }
             }
         }));
-        subscriptions.push(
-            cx.subscribe(&search, |this, search, event: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    let query = search.read(cx).value().trim().to_string();
-                    if !query.is_empty() {
-                        this.search_for(query, cx);
-                    }
-                }
-            }),
-        );
+        subscriptions.push(cx.subscribe(&palette, |this, _, event, cx| match event {
+            PaletteEvent::Pick(pick) => this.go(pick.clone(), cx),
+        }));
         subscriptions.push(cx.subscribe(&sidebar, |this, _, event, cx| match event {
             SidebarEvent::Focus(focus) => this.focus_on(focus.clone(), cx),
             SidebarEvent::SignOut => this.sign_out(cx),
@@ -276,7 +274,7 @@ impl Shell {
             browser,
             history,
             sign_in,
-            search,
+            palette,
             current: None,
             retheme: false,
             resizing: None,
@@ -471,6 +469,61 @@ impl Shell {
     fn search_for(&mut self, query: String, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |sidebar, cx| sidebar.clear(cx));
         self.focus_on(Focus::search(query), cx);
+    }
+
+    /// Go where a palette row points. A section and a repository are the
+    /// same jump the sidebar makes, highlight and all; the search row is the
+    /// one that leaves for the network.
+    fn go(&mut self, pick: Pick, cx: &mut Context<Self>) {
+        match pick {
+            Pick::Section(section) => self.refocus(Focus::Section(section), cx),
+            Pick::Repo(repo) => self.refocus(Focus::repo(repo), cx),
+            Pick::Search(query) => self.search_for(query, cx),
+        }
+    }
+
+    /// Open the palette over the window, empty and ready to type in.
+    ///
+    /// Nothing to jump to before there is a viewer, so a signed-out window
+    /// answers ⌘K with nothing rather than with an empty box.
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.signed_in {
+            return;
+        }
+        self.palette
+            .update(cx, |palette, cx| palette.reset(window, cx));
+        let palette = self.palette.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            dialog
+                .w(px(560.))
+                // High enough to sit under the pointer's own reach and low
+                // enough to leave the window's top strip visible.
+                .margin_top(px(96.))
+                // Its own frame is the whole of it: no title, no close
+                // button, and no padding, so the rule under the field runs
+                // the full width the way a palette's does.
+                .close_button(false)
+                .p_0()
+                // Opaque, as the ask dialog is: the window's glass under a
+                // list of rows is unreadable.
+                .bg(Tokens::global(cx).colors().popover())
+                // Use the dialog's content slot rather than its generic child
+                // list. A `Command` is an entity-backed component; inside the
+                // generic scrolling body its flex height resolves to zero, so
+                // only the backdrop is painted. This is the integration shape
+                // used by the toolkit's own command-dialog example.
+                .content({
+                    let palette = palette.clone();
+                    move |content, _, _| content.child(palette.clone())
+                })
+        });
+        // The dialog takes the focus for itself as it opens, so the caret
+        // goes into the field once that has happened.
+        let palette = self.palette.clone();
+        window.defer(cx, move |window, cx| {
+            let field = palette.read(cx).focus_handle(cx);
+            field.focus(window, cx);
+        });
     }
 
     /// What the centre column is showing, whichever view is showing it.
@@ -690,6 +743,10 @@ impl Shell {
         self.refresh(cx);
     }
 
+    fn on_open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_palette(window, cx);
+    }
+
     /// Fetch again what is on screen: the sidebar's lists, the centre list,
     /// and the item being read.
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -774,13 +831,21 @@ impl Shell {
     }
 
     /// The window's own controls, across the top of the leading column: room
-    /// for the traffic lights, then the sidebar toggle.
+    /// for the traffic lights, then the sidebar toggle, and the palette at
+    /// the far end.
+    ///
+    /// The palette belongs here rather than in the centre strip because what
+    /// it opens onto is the whole window — the sections and the repositories
+    /// this column lists, and the search — while the centre strip belongs to
+    /// one repository.
     fn window_controls(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let strip = h_flex()
             .id("window-controls")
             .flex_shrink_0()
+            .w_full()
             .h(HEADER_HEIGHT)
             .pl(TRAFFIC_LIGHT_INSET)
+            .pr_2()
             .gap_3()
             .items_center()
             .child(self.panel_toggle(
@@ -788,8 +853,28 @@ impl Shell {
                 IconName::PanelLeftClose,
                 IconName::PanelLeftOpen,
                 cx,
-            ));
+            ))
+            .child(div().flex_1())
+            .children(self.palette_button("open-palette", cx));
         self.draggable(strip, cx)
+    }
+
+    /// The control that opens the palette, `None` when there is nothing to
+    /// jump to yet.
+    ///
+    /// Drawn in whichever strip is the leading one, so exactly one is on
+    /// screen: the sidebar's while it is open, the centre's while it is not.
+    fn palette_button(&self, id: &'static str, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let secondary = Tokens::global(cx).colors().text_secondary;
+        self.signed_in.then(|| {
+            self.icon_button(
+                id,
+                Icon::new(IconName::Search).size_4().text_color(secondary),
+                rust_i18n::t!("search.title").to_string(),
+                cx,
+                |this, window, cx| this.open_palette(window, cx),
+            )
+        })
     }
 
     /// A two-way toggle in the centre strip, drawn as a row of chips.
@@ -913,12 +998,11 @@ impl Shell {
                     },
                 )
             });
-        let search = self.signed_in.then(|| {
-            div()
-                .w(px(240.))
-                .flex_shrink_0()
-                .child(Input::new(&self.search).cleanable(true))
-        });
+        // Only when this is the leading strip: the sidebar's own carries it
+        // otherwise, and two would be one too many.
+        let palette = leading
+            .then(|| self.palette_button("open-palette-centre", cx))
+            .flatten();
         let refresh = self.icon_button(
             "refresh",
             Icon::new(IconName::RotateCw)
@@ -978,7 +1062,7 @@ impl Shell {
                     .items_center()
                     .children(tab_chips)
                     .children(status_chips)
-                    .children(search)
+                    .children(palette)
                     .child(refresh)
                     .child(right_toggle),
             );
@@ -1073,6 +1157,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_right_panel))
             .on_action(cx.listener(Self::on_refresh))
+            .on_action(cx.listener(Self::on_open_palette))
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.end_resize(cx)),

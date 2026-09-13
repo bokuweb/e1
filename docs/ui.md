@@ -9,7 +9,7 @@ The same three-column workstation as Ginka, on the same dark glass:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│ ●●●  ⬓        │ ⇄ bokuweb/ginka · Pull requests   [open][closed]  ⟳  ⬓          │
+│ ●●●  ⬓      ⌕ │ ⇄ bokuweb/ginka · Pull requests   [open][closed]  ⟳  ⬓          │
 ├───────────────┼───────────────────────────────────────┼─────────────────────────┤
 │ e1   bokuweb  │ ⇄ Start a chat before it has a…  #12  │ #12 Start a chat before  │
 │               │   bokuweb · 2h · 3 comments           │ ⇄ Open · bokuweb wants  │
@@ -61,7 +61,7 @@ The system UI font, a step under the reference: sidebar rows, list titles and th
 
 ### 3.1 Headers — there is no title bar
 
-As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; the leading strip leaves 78 px for the traffic lights; every strip drags the window and double-clicks to zoom. The centre strip says what the list is — repository and kind, or the section name — and carries the open/closed toggle, refresh, and the right panel toggle.
+As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; the leading strip leaves 78 px for the traffic lights; every strip drags the window and double-clicks to zoom. The centre strip says what the list is — repository and kind, or the section name — and carries the open/closed toggle, refresh, and the right panel toggle. The **leading** strip carries the sidebar toggle at its start and the palette's magnifier at its end — the sidebar's strip while that column is open, the centre's while it is not, so exactly one magnifier is ever on screen.
 
 ### 3.2 Sidebar — navigation
 
@@ -72,7 +72,7 @@ As Ginka §3.1: each column paints itself to the top and carries a 44 px strip; 
 
 ### 3.3 Centre — the list, the finder, or a search
 
-The centre strip carries chips for a repository — *Pull requests*, *Issues*, *Files*, *History* — then *Open*/*Closed* for the two lists, then a search box (240 px) that runs GitHub's issue search on ⏎ and lists the answer with no sidebar row highlighted.
+The centre strip carries chips for a repository — *Pull requests*, *Issues*, *Files*, *History* — then *Open*/*Closed* for the two lists. The search that used to sit here as a 240 px box is the palette (§3.6); what it finds is listed here with no sidebar row highlighted.
 
 **The files column** (the *Files* chip) is a search box over a virtualized list that is one of two things. With the box empty it is the repository's **file tree**: one row per entry at 28 px, indented 13 px a level, a chevron and a folder mark on a directory and a page mark on a file, directories before files and each alphabetical, as GitHub lists them. Everything starts folded; picking a directory folds or unfolds it, picking a file reads it into the right panel. The tree is folded from the paths themselves rather than from GitHub's directory entries, so no folder can appear that holds nothing to open. Opening a file from somewhere else — a launch argument, a link — unfolds the way down to it and marks it.
 
@@ -111,7 +111,17 @@ Empty state: *Pick something to read* over the glass.
 
 What the centre column is when there is no token: the logo at 56 px, *Sign in to GitHub*, one sentence on what the app reads, and one filled button. Pressing it swaps the button for the device code in mono at 24 px inside a card, the address to enter it at, *Open in browser* (which also copies the code) and *Copy code*, and a quiet *Waiting for GitHub…* line. A refusal or an expiry is one sentence in `status.error` with *Try again*. Signing out is the small mark beside the login in the sidebar footer.
 
-### 3.6 Application menu and updates
+### 3.6 The palette — everywhere the window can go
+
+**⌘K**, or the magnifier at the end of the leading strip. A dialog 560 px wide, 96 px down from the top, painted opaque over the window with no title, no close button and no padding of its own, so the field's rule runs edge to edge: a field at the top, then the rows under their headings, at most 340 px of them before the list scrolls.
+
+What it offers is **the window's own furniture first and the network last**. With the field empty it is the four sections and then every repository, in the sidebar's order, because a palette that offers nothing until something is typed is a search box with extra steps. Anything typed is matched fuzzily by the same `nucleo` the file finder uses — a section against its label, a repository against `owner/name`, so typing an owner lists everything under it — and then one last row, under its own heading, that runs GitHub's issue search for the words themselves. That row is last on purpose: it is the only one that costs a request, so it is what is left when nothing here matches rather than the first thing offered. A section row keeps the sidebar's own glyph, a repository row its name with the owner muted after it and the lock when it is private.
+
+Picking a section or a repository is the jump the sidebar makes, highlight and all; picking the search row lists the answer with no row highlighted. ↑↓ walk the rows while the caret stays in the field, ⏎ takes the highlighted one, and Escape clears a non-empty query before it closes the dialog, so a mistyped query costs one press rather than a reopen. A signed-out window answers ⌘K with nothing: there is nowhere to jump to yet.
+
+**Why it is not a box in the centre strip**, which is where it started: that strip belongs to a repository — its tabs, its open/closed toggle — while this goes everywhere, and a fixed-width field beside chips that cannot shrink is the first thing a narrow centre column cuts off. The magnifier costs 24 px in a strip that has room; the field costs 240 px in the one that does not.
+
+### 3.7 Application menu and updates
 
 The standalone macOS application adds *Check for Updates…* to its application
 menu only when it is running from a bundle with the embedded Sparkle framework.
@@ -131,6 +141,7 @@ system applications instead of presenting as a full-bleed square.
 | Window shell | `gpui-component` `Root`, our header strips |
 | Columns | ours: three flex children with explicit widths, a 9 px grab area centred on each divider, and the drag tracked at the window root |
 | List | `gpui::uniform_list` with rows from `e1_ui::rows::ItemRow` |
+| Palette | `gpui-component` `Command` in a `Dialog`, over rows from `e1_ui::palette` |
 | Markdown | `gpui-component` `TextView::markdown` |
 | Tooltips, icons | `gpui-component` primitives; our SVGs in `assets/icons/` for what the toolkit lacks (pull request, merge, issue, comment, lock) |
 | Application update | macOS application menu + Sparkle standard updater window; standalone only |
@@ -138,7 +149,7 @@ system applications instead of presenting as a full-bleed square.
 ## 5. Interaction rules
 
 - **Anything still running turns — and is asked about again.** A check in progress, a step still running, the checks card's own badge while runs are pending, and the sign-in screen's wait all use the toolkit's `Spinner` on the loader glyph. A static loader glyph reads as broken. GitHub does not push the end of a run, so the detail column re-asks every 20 s about whatever on screen is still pending — the checks on the pull, or the steps and log of the job — and the spinner stops when the work does.
-- `⌘B` sidebar, `⌘⌥B` right panel, `⌘R` refresh what is on screen. `⌘K` lands in M3.
+- `⌘B` sidebar, `⌘⌥B` right panel, `⌘R` refresh what is on screen, `⌘K` the palette (§3.6).
 - Picking a row opens it on the right and never navigates the centre away.
 - Never block: every fetch shows the stale value until the fresh one lands.
 - Truncate repository names and titles from the left only when the tail is the meaningful part (repository names); titles truncate from the right.

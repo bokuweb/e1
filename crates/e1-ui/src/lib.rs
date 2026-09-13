@@ -23,6 +23,7 @@ pub mod layout;
 pub mod log;
 pub mod logging;
 pub mod nav;
+pub mod palette;
 pub mod paths;
 pub mod rows;
 pub mod settings;
