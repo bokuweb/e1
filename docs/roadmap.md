@@ -1,7 +1,7 @@
 # e1 Roadmap
 
 > Status: **M0 and M1 landed; M2 in progress**.
-> Last updated: 2026-09-07
+> Last updated: 2026-09-14
 
 ## 1. Vision
 
@@ -11,7 +11,7 @@ Ginka is an orchestrator for coding agents. The work those agents produce ends u
 
 Three properties drive every decision below:
 
-1. **Same bones as Ginka.** The same toolkit at the same rev, the same token schema, the same three-column frameless window, the same crate split. Sameness is not aesthetic here; it is what makes embedding a mount rather than a port.
+1. **Same bones as Ginka.** The same toolkit at the same rev, the same token schema, the same three-column frameless window with its optional far-right agent pane, the same crate split. Sameness is not aesthetic here; it is what makes embedding a mount rather than a port.
 2. **Standalone first.** e1 must be a useful GitHub client on its own, with no Ginka process anywhere. Embedding is a later milestone that must not be paid for up front in complexity, only in discipline (§4.3).
 3. **Local-first, token-only.** A GitHub token is the only requirement. It is found in the environment or in `gh`, or obtained by signing in from the window and kept in the platform keychain; it never touches a plain file, and nothing needs an account beyond that.
 
@@ -38,17 +38,19 @@ A user can: open the window → see the unread inbox, the pull requests they aut
 
 ### 4.1 Process model
 
-One process. There is no daemon: GitHub is the remote, and the token is the only state, and it is not ours. The window holds view state and in-memory caches only; closing it loses nothing but a few seconds of fetching.
+One application process and no daemon: GitHub is the remote, and the token is the only durable identity state, and it is not ours. The window holds view state and in-memory caches only; closing it loses nothing but a few seconds of fetching. An Ask turn starts one bounded installed-CLI child process in structured-output mode, then keeps only the returned session id so the next turn can resume it.
 
 ```
 ┌────────────────────────────────────────────┐          ┌────────────────┐
 │  e1 (GPUI app)                             │  HTTPS   │  api.github.com│
 │  src/main.rs   lifecycle + window          │◄────────►│                │
 │  e1-views      Shell / Sidebar / List /    │  (ureq,  │                │
-│                Detail, over Arc<dyn GitHub>│   bg exec)│               │
+│                Detail / Agent pane, over   │   bg exec)│               │
+│                Arc<dyn GitHub>             │           │               │
 │  e1-ui         tokens, settings, view models│         └────────────────┘
 │  e1-github     GitHub trait, REST, Scripted│
 │  e1-updater-macos  standalone Sparkle FFI  │
+│  installed CLI child ◄── JSON turns/session│
 └────────────────────────────────────────────┘
 ```
 
@@ -66,8 +68,8 @@ e1/
 │  ├─ e1-updater-macos/    # standalone-only safe API over contained Sparkle FFI
 │  ├─ e1-ui/               # Tokens + theme apply, Assets, Layout, AppSettings,
 │  │                       # Paths, i18n, logging, nav and row view models, Fetch
-│  └─ e1-views/            # Store, Shell, Sidebar, ItemList, Detail. A library,
-│                          # with no tests (AGENTS.md rule 6).
+│  └─ e1-views/            # Store, Shell, Sidebar, ItemList, Detail, AgentPane.
+│                          # A library with no tests (AGENTS.md rule 6).
 ├─ locales/app.yml
 ├─ assets/themes/{dark,light}.json
 ├─ assets/icons/*.svg
@@ -168,7 +170,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 | **M0 Shell** | Workspace mirroring Ginka's; tokens, assets, settings, layout persistence; frameless glass window with three resizable columns and draggable header strips; `⌘B`/`⌘⌥B`; en+ja; token discovery; `Scripted` and `E1_DEMO=1` | landed |
 | **M1 Read** | Inbox; the four fixed sections (inbox, my pulls, review requests, assigned); repositories; per-repo pulls and issues, open/closed; detail with markdown body, labels, pull header, comments; open on GitHub; `⌘R` refresh; stale-while-revalidate `Fetch` | landed |
 | **M2 Review** | Pull files and diffs (landed: a Files tab, every diff in one virtualized list, folded per file, unified or split, `e1_ui::diff`); comments on diff lines, read and written (landed); sign in from the window by device flow, token in the keychain, sign out (landed); the file finder and file reading (landed); search over issues and pulls (landed); the two caches (landed, §4.7); avatars (landed); checks and their Actions logs (landed); review decision; mark a notification read; polling the inbox | in progress |
-| **M3 Act** | Comment, close, reopen, merge with a method (landed); approve / request changes (landed); labels, assignees and projects edited in place (landed — projects over GraphQL, which needs the `project` scope); the checks and the merge as GitHub's card (landed); draft and ready for review (landed, GraphQL); edit title and body; `⌘K` palette over the sections, the repositories and GitHub's search (landed, `e1_ui::palette` and `e1-views/src/palette.rs`), and over every action next | in progress |
+| **M3 Act** | Comment, close, reopen, merge with a method (landed); approve / request changes (landed); labels, assignees and projects edited in place (landed — projects over GraphQL, which needs the `project` scope); the checks and the merge as GitHub's card (landed); draft and ready for review (landed, GraphQL); CLI-backed session chat in a far-right pane (landed); edit title and body; `⌘K` palette over the sections, the repositories and GitHub's search (landed, `e1_ui::palette` and `e1-views/src/palette.rs`), and over every action next | in progress |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
 | **M6 Ship** | Local ad-hoc universal app/ZIP/DMG and the standalone Sparkle bridge (landed); Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; Sparkle updates through a signed appcast and R2; installation, update and Keychain smoke tests (`docs/releasing.md`) | in progress |
@@ -192,6 +194,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 
 | Date | Decision | Why |
 | --- | --- | --- |
+| 2026-09-14 | An ask is a far-right chat pane backed by the CLI's resumable session | A modal can compose one hand-off but cannot hold a conversation, and opening Terminal divides the work from the GitHub context that prompted it. The first structured CLI turn carries that context, its returned session id resumes later turns, and the virtualized chat remains visible beside the item. Credentials and model access remain the installed CLI's; e1 only owns its child process and stdout. |
 | 2026-09-13 | Automatic updates follow Waku's Sparkle contract: GitHub Releases are the publication gate, R2 serves an Ed25519-signed appcast and immutable ZIPs, and the updater stays in the standalone binary boundary | Sparkle owns safe replacement and relaunch, old archives enable efficient deltas, and keeping the bridge out of `e1-views` prevents an embedded GitHub surface from trying to update Ginka. The unavoidable Objective-C FFI and its scoped unsafe exception live in a dedicated macOS updater crate. The standard Sparkle UI ships before any custom sidebar presentation. |
 | 2026-09-09 | The search leaves the centre strip for a ⌘K palette | The strip belongs to a repository — its tabs, its open/closed toggle — and the search went everywhere, so a global control was sitting in a repository's own furniture. It was also the strip's only child that could not shrink: a 240 px field beside chips that hold their width is the first thing a narrow centre column pushes off the edge, which is how the problem was noticed. The palette costs a magnifier in whichever strip is the leading one, and it took the sections and the repositories with it, so ⌘K is now the way to anywhere rather than a second way to search. |
 | 2026-09-09 | The palette is the toolkit's `Command`, with its filter turned off | It already owns the part that is easy to get wrong: ↑↓ reaching the list while the caret stays in the field (its bindings are registered after the input's, so they win at the same node), the virtualized rows, the headings, and Escape clearing a query before it closes the dialog. Its own filter is a substring of the label, which would have dropped the *search GitHub* row the moment nothing else matched, so `filterable(false)` and the matching is `e1_ui::palette` over `nucleo` — the file finder's matcher, and testable without a window. |

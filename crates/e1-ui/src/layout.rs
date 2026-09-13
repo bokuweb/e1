@@ -29,17 +29,20 @@ pub enum Panel {
     Sidebar,
     /// The item being read, on the right.
     RightPanel,
+    /// The CLI-backed chat, at the far right.
+    AgentPanel,
 }
 
 impl Panel {
-    /// Both, in render order.
-    pub const ALL: &'static [Panel] = &[Panel::Sidebar, Panel::RightPanel];
+    /// Every optional panel, in render order.
+    pub const ALL: &'static [Panel] = &[Panel::Sidebar, Panel::RightPanel, Panel::AgentPanel];
 
     /// The locale key for the panel's name.
     pub fn label_key(self) -> &'static str {
         match self {
             Self::Sidebar => "panel.sidebar",
             Self::RightPanel => "panel.right",
+            Self::AgentPanel => "panel.agent",
         }
     }
 }
@@ -49,8 +52,10 @@ impl Panel {
 pub struct Layout {
     sidebar_open: bool,
     right_open: bool,
+    agent_open: bool,
     sidebar_width: f32,
     right_width: f32,
+    agent_width: f32,
 }
 
 impl Layout {
@@ -59,8 +64,10 @@ impl Layout {
         Self {
             sidebar_open: settings.sidebar_open,
             right_open: settings.right_panel_open,
+            agent_open: settings.agent_panel_open,
             sidebar_width: settings.sidebar_width,
             right_width: settings.right_panel_width,
+            agent_width: settings.agent_panel_width,
         }
     }
 
@@ -68,8 +75,10 @@ impl Layout {
     pub fn write_into(&self, settings: &mut AppSettings) {
         settings.sidebar_open = self.sidebar_open;
         settings.right_panel_open = self.right_open;
+        settings.agent_panel_open = self.agent_open;
         settings.sidebar_width = self.sidebar_width;
         settings.right_panel_width = self.right_width;
+        settings.agent_panel_width = self.agent_width;
     }
 
     /// Whether a panel is showing.
@@ -77,6 +86,7 @@ impl Layout {
         match panel {
             Panel::Sidebar => self.sidebar_open,
             Panel::RightPanel => self.right_open,
+            Panel::AgentPanel => self.agent_open,
         }
     }
 
@@ -90,6 +100,7 @@ impl Layout {
         match panel {
             Panel::Sidebar => self.sidebar_open = open,
             Panel::RightPanel => self.right_open = open,
+            Panel::AgentPanel => self.agent_open = open,
         }
     }
 
@@ -100,6 +111,7 @@ impl Layout {
         match panel {
             Panel::Sidebar => self.sidebar_width = value,
             Panel::RightPanel => self.right_width = value,
+            Panel::AgentPanel => self.agent_width = value,
         }
     }
 
@@ -109,13 +121,16 @@ impl Layout {
     /// shifts every slot after it, so the resize callback must consult this
     /// rather than assume index 0 is the sidebar.
     pub fn columns(&self) -> Vec<Option<Panel>> {
-        let mut slots = Vec::with_capacity(3);
+        let mut slots = Vec::with_capacity(4);
         if self.sidebar_open {
             slots.push(Some(Panel::Sidebar));
         }
         slots.push(None);
         if self.right_open {
             slots.push(Some(Panel::RightPanel));
+        }
+        if self.agent_open {
+            slots.push(Some(Panel::AgentPanel));
         }
         slots
     }
@@ -138,6 +153,7 @@ impl Layout {
         px(match panel {
             Panel::Sidebar => self.sidebar_width,
             Panel::RightPanel => self.right_width,
+            Panel::AgentPanel => self.agent_width,
         })
     }
 }
@@ -177,6 +193,26 @@ mod tests {
         );
         layout.set_open(Panel::Sidebar, false);
         assert_eq!(layout.columns(), vec![None, Some(Panel::RightPanel)]);
+    }
+
+    #[test]
+    fn the_agent_is_always_the_last_panel() {
+        let mut layout = Layout::from_settings(&AppSettings::default());
+        layout.set_open(Panel::AgentPanel, true);
+        assert_eq!(
+            layout.columns(),
+            vec![
+                Some(Panel::Sidebar),
+                None,
+                Some(Panel::RightPanel),
+                Some(Panel::AgentPanel),
+            ]
+        );
+        layout.set_open(Panel::RightPanel, false);
+        assert_eq!(
+            layout.columns(),
+            vec![Some(Panel::Sidebar), None, Some(Panel::AgentPanel)]
+        );
     }
 
     #[test]

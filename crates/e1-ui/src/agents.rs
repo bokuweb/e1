@@ -1,11 +1,12 @@
 //! The coding-agent CLIs on this machine, and handing one a question.
 //!
-//! e1 reads GitHub; it does not run agents. What it can do is notice that
-//! the reader already has an agent CLI installed, signed in and configured,
-//! and start it on what they are looking at — the failing step of a log, a
-//! hunk of a diff, an issue nobody has picked up. Nothing here talks to a
-//! model or holds a credential: it finds a binary, writes a prompt and
-//! starts a session in a terminal, which is where those CLIs live.
+//! e1 borrows an agent CLI already installed, signed in and configured, and
+//! starts it on what the reader is looking at — the failing step of a log, a
+//! hunk of a diff, an issue nobody has picked up. Nothing here talks directly
+//! to a model or holds a credential. A CLI child runs one structured turn at
+//! a time and its session id carries the conversation between turns in the
+//! app's far-right chat pane. The older terminal hand-off remains available
+//! as a small public primitive, but the application surface no longer uses it.
 //!
 //! Finding the binary is the fiddly part, and for one reason: a window
 //! opened from Finder inherits `launchd`'s environment, not the `PATH` the
@@ -83,6 +84,11 @@ impl Kind {
             Kind::OpenCode => "OpenCode",
             Kind::Amp => "Amp",
         }
+    }
+
+    /// Whether this CLI has a verified structured-output and resume contract.
+    pub fn supports_chat(self) -> bool {
+        matches!(self, Kind::Claude | Kind::Codex | Kind::Cursor)
     }
 
     /// The executables to look for, best name first. Some CLIs ship under
@@ -613,6 +619,161 @@ pub fn start(
     Ok(path)
 }
 
+/// One answer from a CLI-backed chat turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatReply {
+    /// Markdown returned for the assistant bubble.
+    pub text: String,
+    /// The CLI's durable conversation identifier, when it supplied one.
+    pub session: Option<String>,
+}
+
+/// Arguments for one headless chat turn.
+///
+/// Interactive terminal arguments and chat arguments are deliberately
+/// separate. A full-screen TUI owns a terminal; the pane needs structured
+/// stdout and a session id it can pass back on the next turn.
+pub fn chat_arguments(
+    kind: Kind,
+    prompt: &str,
+    tuning: &Tuning,
+    session: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let mut arguments = match kind {
+        Kind::Codex => {
+            let mut arguments = vec!["exec".into()];
+            if let Some(session) = session {
+                arguments.extend(["resume".into(), session.into()]);
+            }
+            arguments.push("--json".into());
+            if let Some(model) = tuning.model() {
+                arguments.extend(["-m".into(), model.into()]);
+            }
+            if let Some(effort) = tuning.effort() {
+                arguments.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+            }
+            arguments
+        }
+        Kind::Claude => {
+            let mut arguments = vec!["-p".into(), "--output-format".into(), "json".into()];
+            if let Some(session) = session {
+                arguments.extend(["--resume".into(), session.into()]);
+            }
+            if let Some(model) = tuning.model() {
+                arguments.extend(["--model".into(), model.into()]);
+            }
+            if let Some(effort) = tuning.effort() {
+                arguments.extend(["--effort".into(), effort.into()]);
+            }
+            arguments
+        }
+        Kind::Cursor => {
+            let mut arguments = vec!["-p".into(), "--output-format".into(), "json".into()];
+            if let Some(session) = session {
+                arguments.extend(["--resume".into(), session.into()]);
+            }
+            if let Some(model) = tuning.model() {
+                arguments.extend(["--model".into(), model.into()]);
+            }
+            arguments
+        }
+        _ => anyhow::bail!(
+            "{} does not expose a supported chat output yet",
+            kind.label()
+        ),
+    };
+    arguments.push(prompt.into());
+    Ok(arguments)
+}
+
+/// Run one turn through an installed CLI and keep its session for the next.
+///
+/// This blocks and must be called on GPUI's background executor. The child
+/// inherits the user's CLI configuration and credentials, but not a terminal;
+/// stdout is structured data owned by the pane and stderr becomes a visible
+/// error instead of disappearing into the application log.
+pub fn chat(
+    agent: &Agent,
+    prompt: &str,
+    tuning: &Tuning,
+    session: Option<&str>,
+    workdir: Option<&Path>,
+) -> anyhow::Result<ChatReply> {
+    let arguments = chat_arguments(agent.kind, prompt, tuning, session)?;
+    let mut command = Command::new(&agent.program);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(workdir) = workdir {
+        command.current_dir(workdir);
+    }
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        anyhow::bail!(
+            "{} exited with {}{}",
+            agent.kind.label(),
+            output.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        );
+    }
+    parse_chat_output(agent.kind, &stdout)
+}
+
+/// Read the stable parts of the CLIs' JSON without coupling the view to all
+/// of their progress-event variants.
+pub fn parse_chat_output(kind: Kind, output: &str) -> anyhow::Result<ChatReply> {
+    let values: Vec<serde_json::Value> = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let whole = serde_json::from_str::<serde_json::Value>(output).ok();
+    let values: Vec<&serde_json::Value> = if values.is_empty() {
+        whole.iter().collect()
+    } else {
+        values.iter().collect()
+    };
+
+    let first_string = |names: &[&str]| {
+        values.iter().find_map(|value| {
+            names
+                .iter()
+                .find_map(|name| value.get(*name).and_then(|value| value.as_str()))
+                .map(str::to_string)
+        })
+    };
+    let session = first_string(&["thread_id", "session_id", "chat_id", "chatId"]);
+    let text = match kind {
+        Kind::Codex => values
+            .iter()
+            .filter_map(|value| {
+                let item = value.get("item")?;
+                (item.get("type")?.as_str()? == "agent_message")
+                    .then(|| item.get("text")?.as_str().map(str::to_string))?
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => first_string(&["result", "text", "response", "message"]).unwrap_or_default(),
+    };
+    if text.trim().is_empty() {
+        anyhow::bail!("{} returned no assistant message", kind.label());
+    }
+    Ok(ChatReply { text, session })
+}
+
 /// Where a repository is checked out, if it is, under any of these roots.
 ///
 /// `ghq` and its imitators all lay a checkout out the same way, so the
@@ -959,5 +1120,86 @@ mod tests {
             None,
             "not every repo is cloned"
         );
+    }
+
+    #[test]
+    fn chat_turns_start_and_resume_each_cli_session() {
+        let tuning = Tuning {
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("high".into()),
+        };
+        assert_eq!(
+            chat_arguments(Kind::Codex, "first", &tuning, None).unwrap(),
+            [
+                "exec",
+                "--json",
+                "-m",
+                "gpt-5.6-sol",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "first"
+            ]
+        );
+        assert_eq!(
+            chat_arguments(Kind::Codex, "again", &tuning, Some("thread-1")).unwrap(),
+            [
+                "exec",
+                "resume",
+                "thread-1",
+                "--json",
+                "-m",
+                "gpt-5.6-sol",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "again"
+            ]
+        );
+        assert!(
+            chat_arguments(Kind::Claude, "again", &tuning, Some("session-1"))
+                .unwrap()
+                .windows(2)
+                .any(|pair| pair == ["--resume", "session-1"])
+        );
+        assert!(
+            chat_arguments(Kind::Cursor, "again", &tuning, Some("chat-1"))
+                .unwrap()
+                .windows(2)
+                .any(|pair| pair == ["--resume", "chat-1"])
+        );
+        assert!(chat_arguments(Kind::Gemini, "no", &tuning, None).is_err());
+        assert!(Kind::Claude.supports_chat());
+        assert!(Kind::Codex.supports_chat());
+        assert!(Kind::Cursor.supports_chat());
+        assert!(!Kind::Gemini.supports_chat());
+    }
+
+    #[test]
+    fn cli_json_becomes_one_chat_reply_and_a_resumable_session() {
+        let codex = concat!(
+            r#"{"type":"thread.started","thread_id":"abc"}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"First"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Second"}}"#,
+        );
+        assert_eq!(
+            parse_chat_output(Kind::Codex, codex).unwrap(),
+            ChatReply {
+                text: "First\n\nSecond".into(),
+                session: Some("abc".into()),
+            }
+        );
+        assert_eq!(
+            parse_chat_output(
+                Kind::Claude,
+                r#"{"type":"result","result":"Done","session_id":"def"}"#,
+            )
+            .unwrap(),
+            ChatReply {
+                text: "Done".into(),
+                session: Some("def".into()),
+            }
+        );
+        assert!(parse_chat_output(Kind::Codex, r#"{"type":"turn.completed"}"#).is_err());
     }
 }

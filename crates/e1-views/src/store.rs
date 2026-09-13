@@ -145,8 +145,17 @@ impl Store {
     /// installed, and otherwise the first one found.
     pub fn chosen_agent(&self) -> Option<&e1_ui::agents::Agent> {
         self.chosen
-            .and_then(|kind| self.agents.iter().find(|agent| agent.kind == kind))
-            .or_else(|| self.agents.first())
+            .and_then(|kind| {
+                self.agents
+                    .iter()
+                    .find(|agent| agent.kind == kind && agent.kind.supports_chat())
+            })
+            .or_else(|| self.agents.iter().find(|agent| agent.kind.supports_chat()))
+    }
+
+    /// Whether the installed CLIs include one whose session e1 can resume.
+    pub fn has_chat_agent(&self) -> bool {
+        self.agents.iter().any(|agent| agent.kind.supports_chat())
     }
 
     /// Remember which CLI an ask goes to.
