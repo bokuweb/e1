@@ -1,7 +1,8 @@
 # Releasing e1
 
-> Status: proposed design; there is no public release pipeline yet.
-> Last updated: 2026-09-07
+> Status: implementation in progress; local ad-hoc universal bundles exist,
+> but there is no public release pipeline yet.
+> Last updated: 2026-09-13
 
 This document defines the release contract for the standalone macOS app. The
 views embedded in Ginka remain Rust library crates and are not distributed on
@@ -200,6 +201,7 @@ constructs this bundle:
 e1.app/
 └── Contents/
     ├── Info.plist
+    ├── Frameworks/Sparkle.framework
     ├── MacOS/e1
     └── Resources/AppIcon.icns
 ```
@@ -231,6 +233,22 @@ is not App-Sandboxed, and it has no JIT, debugger, camera, microphone, location
 or Apple Events requirement. Add an entitlement only when a concrete feature
 needs it, with a signed-bundle smoke test. Hardened Runtime is enabled by
 `codesign --options runtime`, with a secure timestamp.
+
+Build the local development artifacts with:
+
+```bash
+scripts/bundle-macos.sh debug
+```
+
+This writes the ad-hoc signed app, update ZIP and DMG under `target/dist/`.
+Release mode additionally requires `E1_SPARKLE_FEED_URL`,
+`E1_SPARKLE_PUBLIC_KEY` and `E1_CODESIGN_IDENTITY`; it refuses to produce a
+release bundle with the inert development feed and key. After placing the ZIP
+and its matching release-notes file in an updates directory, generate the
+signed feed with `scripts/appcast-macos.sh <directory>`. The signing key comes
+from `SPARKLE_PRIVATE_KEY` over stdin or from Sparkle's login-keychain entry.
+CI may set `E1_ALLOW_ADHOC_RELEASE=1` with `E1_CODESIGN_IDENTITY=-` only for
+the secret-free universal-build dry run; the public release path never sets it.
 
 ## 6. Version and tag contract
 

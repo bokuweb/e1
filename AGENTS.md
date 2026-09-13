@@ -27,6 +27,7 @@ E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12' E1_DEMO_LOG=2 cargo run   # …opened 
 E1_DEMO=1 E1_DEMO_FILES='bokuweb/e1:src/main.rs' cargo run         # …opened on a repository's finder with a file read
 E1_DEMO=1 E1_DEMO_HISTORY='bokuweb/ginka' cargo run                # …opened on a repository's history
 E1_DEMO=1 E1_DEMO_OPEN='bokuweb/ginka#12' E1_DEMO_LOG=2 E1_DEMO_ASK=1 cargo run   # …with the ask box open on a log
+scripts/bundle-macos.sh debug               # ad-hoc signed .app, update ZIP and DMG under target/dist
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -46,12 +47,16 @@ e1/
 ├─ crates/
 │  ├─ e1-github/        # domain: the data model, the `GitHub` trait, the REST client,
 │  │                    # token discovery, and the scripted fake. No GPUI.
+│  ├─ e1-updater-macos/ # standalone-only safe API over the contained Sparkle FFI
 │  ├─ e1-ui/            # design tokens, assets, settings, layout, view models --
 │  │                    # everything UI-side that is testable without a window
 │  └─ e1-views/         # the GPUI views, as a library a host window can mount
 ├─ locales/app.yml      # every user-visible string, en and ja side by side
 ├─ assets/themes/       # design tokens (dark.json, light.json), Ginka's schema
 ├─ assets/icons/        # app-owned icons, layered over the toolkit's set
+├─ assets/macos/        # the application icon installed in e1.app
+├─ resources/macos/     # the generated bundle's Info.plist template
+├─ scripts/             # explicit macOS bundle and appcast construction
 └─ docs/
 ```
 
