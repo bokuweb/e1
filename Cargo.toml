@@ -8,6 +8,7 @@ publish = false
 [workspace]
 members = [
     "crates/e1-github",
+    "crates/e1-updater-macos",
     "crates/e1-ui",
     "crates/e1-views",
 ]
@@ -20,6 +21,7 @@ publish = false
 
 [workspace.dependencies]
 e1-github = { path = "crates/e1-github" }
+e1-updater-macos = { path = "crates/e1-updater-macos" }
 e1-ui = { path = "crates/e1-ui" }
 e1-views = { path = "crates/e1-views" }
 
@@ -68,6 +70,9 @@ gpui_platform.workspace = true
 gpui-component.workspace = true
 rust-i18n.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+e1-updater-macos.workspace = true
 
 [workspace.lints.rust]
 unsafe_code = "deny"

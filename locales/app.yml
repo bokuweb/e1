@@ -12,6 +12,16 @@ app.signed_out:
   en: not signed in
   ja: 未ログイン
 
+menu.check_for_updates:
+  en: Check for Updates…
+  ja: アップデートを確認…
+menu.services:
+  en: Services
+  ja: サービス
+menu.quit:
+  en: Quit e1
+  ja: e1 を終了
+
 sidebar.inbox:
   en: Inbox
   ja: 受信箱

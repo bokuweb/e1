@@ -43,11 +43,12 @@ One process. There is no daemon: GitHub is the remote, and the token is the only
 ```
 ┌────────────────────────────────────────────┐          ┌────────────────┐
 │  e1 (GPUI app)                             │  HTTPS   │  api.github.com│
-│  src/main.rs   opens the window            │◄────────►│                │
+│  src/main.rs   lifecycle + window          │◄────────►│                │
 │  e1-views      Shell / Sidebar / List /    │  (ureq,  │                │
 │                Detail, over Arc<dyn GitHub>│   bg exec)│               │
 │  e1-ui         tokens, settings, view models│         └────────────────┘
 │  e1-github     GitHub trait, REST, Scripted│
+│  e1-updater-macos  standalone Sparkle FFI  │
 └────────────────────────────────────────────┘
 ```
 
@@ -58,10 +59,11 @@ When embedded (§4.3), the same `e1-views` sits inside Ginka's window and the `A
 ```
 e1/
 ├─ Cargo.toml              # workspace root; the `e1` binary, deliberately thin
-├─ src/main.rs             # paths, settings, locale, logging, the window, Shell
+├─ src/main.rs             # paths, settings, locale, lifecycle, the window, Shell
 ├─ crates/
 │  ├─ e1-github/           # model, GitHub trait, REST client, token discovery,
 │  │                       # Scripted fake. No GPUI.
+│  ├─ e1-updater-macos/    # standalone-only safe API over contained Sparkle FFI
 │  ├─ e1-ui/               # Tokens + theme apply, Assets, Layout, AppSettings,
 │  │                       # Paths, i18n, logging, nav and row view models, Fetch
 │  └─ e1-views/            # Store, Shell, Sidebar, ItemList, Detail. A library,
@@ -72,7 +74,7 @@ e1/
 └─ docs/{roadmap,ui}.md
 ```
 
-Dependency direction: `e1-views → e1-ui → e1-github`. `e1-github` knows nothing about the UI; `e1-ui` knows the model but not the views; `e1-views` is the only crate that touches `gpui-component`'s render chains.
+Dependency direction: `e1-views → e1-ui → e1-github`. `e1-github` knows nothing about the UI; `e1-ui` knows the model but not the views; `e1-views` is the only crate that touches `gpui-component`'s render chains. The root binary alone depends on `e1-updater-macos`; none of the embeddable path does.
 
 ### 4.3 The embedding contract
 
@@ -80,7 +82,7 @@ What Ginka will do, in its M-later "GitHub surface", is add `e1-views` to its wo
 
 | # | Constraint | Why it is decided now |
 | --- | --- | --- |
-| E1 | **Views are a library crate.** `src/main.rs` opens a window and nothing more. | A view in a binary cannot be linked. |
+| E1 | **Views are a library crate.** `src/main.rs` owns standalone lifecycle integration and opens the window, but draws nothing. | A view in a binary cannot be linked, while an embedded view must not inherit the standalone updater. |
 | E2 | **`Arc<dyn GitHub>` is the only way a view reaches the network.** The trait is blocking, `Send + Sync`, and called on the background executor. | Ginka's daemon owns state; its implementation will answer over its RPC. A blocking trait can be implemented over a WebSocket channel with `block_on`; an async trait would fix the executor. |
 | E3 | **No second reactor.** `ureq` over rustls, no tokio anywhere in the graph. | Ginka runs on `smol` and refuses another runtime in its process. |
 | E4 | **`gpui-component` and `gpui` at Ginka's locked revs**, and no other GPUI library. | Two revs of `gpui` are two unrelated `App`, `Window`, `Element` types. `Cargo.lock` was seeded from Ginka's for this reason, and a toolkit bump here follows one there. |
@@ -169,7 +171,7 @@ Avatars are a third, simpler one: GPUI draws an image from a path and this app h
 | **M3 Act** | Comment, close, reopen, merge with a method (landed); approve / request changes (landed); labels, assignees and projects edited in place (landed — projects over GraphQL, which needs the `project` scope); the checks and the merge as GitHub's card (landed); draft and ready for review (landed, GraphQL); edit title and body; `⌘K` palette over every action and repository | in progress |
 | **M4 Embed** | Extract the shared token crate (E5 as a type); `GitHubPanel` mounted in Ginka's right panel over a daemon-backed `GitHub`; Ginka's sidebar shows the sections | |
 | **M5 Polish** | Light theme sign-off, keyboard traversal audit, reduce-motion, virtualized detail timeline, on-disk cache if the in-memory one proves too little | |
-| **M6 Ship** | Universal macOS app; Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; Sparkle updates through a signed appcast and R2; installation, update and Keychain smoke tests (`docs/releasing.md`) | |
+| **M6 Ship** | Local ad-hoc universal app/ZIP/DMG and the standalone Sparkle bridge (landed); Developer ID signing; notarized and stapled DMG; protected tag-driven GitHub Release flow; Sparkle updates through a signed appcast and R2; installation, update and Keychain smoke tests (`docs/releasing.md`) | in progress |
 
 ## 6. Quality bars
 

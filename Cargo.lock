@@ -1583,6 +1583,7 @@ dependencies = [
  "anyhow",
  "e1-github",
  "e1-ui",
+ "e1-updater-macos",
  "e1-views",
  "gpui",
  "gpui-component",
@@ -1624,6 +1625,14 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "e1-updater-macos"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "objc2 0.6.4",
 ]
 
 [[package]]

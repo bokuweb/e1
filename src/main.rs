@@ -1,9 +1,10 @@
 //! The e1 desktop app.
 //!
 //! Deliberately thin: it finds where settings live, decides the language,
-//! finds a token, opens a frameless window and mounts [`e1_views::Shell`].
-//! Everything that draws is in `e1-views`, so a host can mount the same
-//! views without this file (`AGENTS.md` rule 1).
+//! finds a token, owns standalone-only lifecycle integration, opens a frameless
+//! window and mounts [`e1_views::Shell`]. Everything that draws is in
+//! `e1-views`, so a host can mount the same views without this file
+//! (`AGENTS.md` rule 1).
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -18,6 +19,43 @@ use gpui::{
 };
 use gpui_component::Root;
 use std::sync::Arc;
+
+#[cfg(target_os = "macos")]
+gpui::actions!(e1_app, [CheckForUpdates, Quit]);
+
+/// The updater is application-owned state, deliberately separate from the
+/// embeddable GitHub views.
+#[cfg(target_os = "macos")]
+struct UpdaterState(Option<e1_updater_macos::Updater>);
+
+#[cfg(target_os = "macos")]
+impl gpui::Global for UpdaterState {}
+
+/// Install the macOS application menu, omitting update UI from unsupported
+/// development layouts where Sparkle could not initialize.
+#[cfg(target_os = "macos")]
+fn set_app_menu(cx: &mut App, updater_available: bool) {
+    use gpui::{Menu, MenuItem, SystemMenuType};
+
+    let mut items = Vec::new();
+    if updater_available {
+        items.push(MenuItem::action(
+            rust_i18n::t!("menu.check_for_updates").to_string(),
+            CheckForUpdates,
+        ));
+        items.push(MenuItem::separator());
+    }
+    items.push(MenuItem::os_submenu(
+        rust_i18n::t!("menu.services").to_string(),
+        SystemMenuType::Services,
+    ));
+    items.push(MenuItem::separator());
+    items.push(MenuItem::action(
+        rust_i18n::t!("menu.quit").to_string(),
+        Quit,
+    ));
+    cx.set_menus([Menu::new(rust_i18n::t!("app.name").to_string()).items(items)]);
+}
 
 /// Where the window's data comes from, and where its token came from.
 ///
@@ -99,6 +137,23 @@ fn main() -> Result<()> {
         e1_views::init(cx);
         let mode = Mode::resolve(app_settings.appearance, cx.window_appearance());
         e1_ui::theme::apply(mode, cx);
+
+        #[cfg(target_os = "macos")]
+        {
+            use gpui::KeyBinding;
+
+            let updater = e1_updater_macos::Updater::init();
+            let updater_available = updater.is_some();
+            cx.set_global(UpdaterState(updater));
+            cx.on_action(|_: &CheckForUpdates, cx| {
+                if let Some(updater) = &cx.global::<UpdaterState>().0 {
+                    updater.check_for_updates();
+                }
+            });
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+            set_app_menu(cx, updater_available);
+        }
 
         cx.spawn(async move |cx| {
             // No title bar of any kind: the columns run to the top of the

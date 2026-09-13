@@ -1,7 +1,7 @@
 # e1 UI Specification
 
 > Companion to [`roadmap.md`](roadmap.md). The roadmap says *what* we build and when; this document says *what it looks like* and *which components render it*. Where this document is silent, Ginka's `docs/ui.md` applies: the window, the tokens and the header strips are the same by design (roadmap §4.3).
-> Last updated: 2026-09-05
+> Last updated: 2026-09-13
 
 ## 1. Design direction
 
@@ -111,6 +111,14 @@ Empty state: *Pick something to read* over the glass.
 
 What the centre column is when there is no token: the logo at 56 px, *Sign in to GitHub*, one sentence on what the app reads, and one filled button. Pressing it swaps the button for the device code in mono at 24 px inside a card, the address to enter it at, *Open in browser* (which also copies the code) and *Copy code*, and a quiet *Waiting for GitHub…* line. A refusal or an expiry is one sentence in `status.error` with *Try again*. Signing out is the small mark beside the login in the sidebar footer.
 
+### 3.6 Application menu and updates
+
+The standalone macOS application adds *Check for Updates…* to its application
+menu only when it is running from a bundle with the embedded Sparkle framework.
+It opens Sparkle's standard window, which owns update progress, release notes,
+consent and errors. A bare `cargo run` build has no update item. The embeddable
+views draw none of this: Ginka owns its own application lifecycle.
+
 ## 4. Component mapping
 
 | Region | Component |
@@ -120,6 +128,7 @@ What the centre column is when there is no token: the logo at 56 px, *Sign in to
 | List | `gpui::uniform_list` with rows from `e1_ui::rows::ItemRow` |
 | Markdown | `gpui-component` `TextView::markdown` |
 | Tooltips, icons | `gpui-component` primitives; our SVGs in `assets/icons/` for what the toolkit lacks (pull request, merge, issue, comment, lock) |
+| Application update | macOS application menu + Sparkle standard updater window; standalone only |
 
 ## 5. Interaction rules
 
