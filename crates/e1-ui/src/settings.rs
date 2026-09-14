@@ -42,6 +42,10 @@ pub struct AppSettings {
     pub right_panel_open: bool,
     /// Its width, kept while it is closed.
     pub right_panel_width: f32,
+    /// Whether the CLI-backed chat column is showing.
+    pub agent_panel_open: bool,
+    /// Its width, kept while it is closed.
+    pub agent_panel_width: f32,
     /// BCP-47 tag; `None` follows the system locale.
     pub locale: Option<String>,
     /// The repository that was on screen, as `owner/name`, restored on launch.
@@ -64,6 +68,8 @@ impl Default for AppSettings {
             sidebar_width: 250.0,
             right_panel_open: true,
             right_panel_width: 420.0,
+            agent_panel_open: false,
+            agent_panel_width: 420.0,
             locale: None,
             last_repo: None,
             collapsed_owners: Vec::new(),

@@ -6,6 +6,7 @@
 //! views are embedded. Everything under it — the sidebar, the list, the
 //! detail — is mounted here exactly the way a host would mount it.
 
+use crate::agent::{AgentPane, AgentPaneEvent};
 use crate::browser::{BrowserEvent, FileBrowser};
 use crate::detail::{Detail, DetailEvent};
 use crate::history::{History, HistoryEvent};
@@ -95,6 +96,8 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     list: Entity<ItemList>,
     detail: Entity<Detail>,
+    /// The CLI-backed conversation at the far right.
+    agent: Entity<AgentPane>,
     browser: Entity<FileBrowser>,
     /// The centre column as a repository's commits.
     history: Entity<History>,
@@ -158,14 +161,31 @@ impl Shell {
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let list = cx.new(|cx| ItemList::new(store.clone(), cx));
         let detail = cx.new(|cx| Detail::new(store.clone(), window, cx));
+        let agent = cx.new(|cx| AgentPane::new(store.clone(), window, cx));
 
         let mut subscriptions = Vec::new();
-        subscriptions.push(cx.subscribe(&detail, |this, _, event, _| match event {
-            DetailEvent::AgentChosen(kind) => {
+        let agent_for_ask = agent.clone();
+        subscriptions.push(
+            cx.subscribe(&detail, move |this, _, event, cx| match event {
+                DetailEvent::Ask(ask) => {
+                    agent_for_ask.update(cx, |agent, cx| agent.open(ask.clone(), cx));
+                    if !this.layout.is_open(Panel::AgentPanel) {
+                        this.toggle(Panel::AgentPanel, cx);
+                    }
+                }
+            }),
+        );
+        subscriptions.push(cx.subscribe(&agent, |this, _, event, cx| match event {
+            AgentPaneEvent::Close => {
+                if this.layout.is_open(Panel::AgentPanel) {
+                    this.toggle(Panel::AgentPanel, cx);
+                }
+            }
+            AgentPaneEvent::AgentChosen(kind) => {
                 this.settings.agent = Some(kind.id().to_string());
                 this.persist();
             }
-            DetailEvent::Tuned(kind, tuning) => {
+            AgentPaneEvent::Tuned(kind, tuning) => {
                 // Nothing chosen is a choice too — it is how a reader goes
                 // back to the CLI's own default — so it removes the entry
                 // rather than writing an empty one.
@@ -271,6 +291,7 @@ impl Shell {
             sidebar,
             list,
             detail,
+            agent,
             browser,
             history,
             sign_in,
@@ -504,8 +525,8 @@ impl Shell {
                 // the full width the way a palette's does.
                 .close_button(false)
                 .p_0()
-                // Opaque, as the ask dialog is: the window's glass under a
-                // list of rows is unreadable.
+                // Opaque: the window's glass under a list of rows is
+                // unreadable.
                 .bg(Tokens::global(cx).colors().popover())
                 // Use the dialog's content slot rather than its generic child
                 // list. A `Command` is an entity-backed component; inside the
@@ -639,7 +660,7 @@ impl Shell {
         // `x`; the right panel's is on its left, so it shrinks.
         let wanted = match drag.panel {
             Panel::Sidebar => drag.start_width + delta,
-            Panel::RightPanel => drag.start_width - delta,
+            Panel::RightPanel | Panel::AgentPanel => drag.start_width - delta,
         };
         // The sidebar has a ceiling of its own; the right panel may take
         // whatever the centre's floor leaves it, because reading a diff
@@ -647,12 +668,14 @@ impl Shell {
         let (min, max) = match drag.panel {
             Panel::Sidebar => (px(200.), px(480.)),
             Panel::RightPanel => (px(280.), Pixels::MAX),
+            Panel::AgentPanel => (px(320.), px(640.)),
         };
         // Neither column may squeeze the centre below its floor.
-        let other = match drag.panel {
-            Panel::Sidebar => self.drawn_or_zero(Panel::RightPanel),
-            Panel::RightPanel => self.drawn_or_zero(Panel::Sidebar),
-        };
+        let other = Panel::ALL
+            .iter()
+            .copied()
+            .filter(|panel| *panel != drag.panel)
+            .fold(px(0.), |total, panel| total + self.drawn_or_zero(panel));
         let room = window.viewport_size().width - other - CENTRE_MIN;
         let width = wanted.max(min).min(max).min(room.max(min));
         if width != self.layout.size(drag.panel) {
@@ -688,6 +711,7 @@ impl Shell {
         let id = match panel {
             Panel::Sidebar => "handle-sidebar",
             Panel::RightPanel => "handle-right",
+            Panel::AgentPanel => "handle-agent",
         };
         div()
             .id(id)
@@ -697,7 +721,7 @@ impl Shell {
             .w(HANDLE_WIDTH)
             .map(|this| match panel {
                 Panel::Sidebar => this.right(-HANDLE_WIDTH / 2.),
-                Panel::RightPanel => this.left(-HANDLE_WIDTH / 2.),
+                Panel::RightPanel | Panel::AgentPanel => this.left(-HANDLE_WIDTH / 2.),
             })
             .cursor_col_resize()
             .group("handle")
@@ -794,6 +818,7 @@ impl Shell {
         let id = match panel {
             Panel::Sidebar => "toggle-sidebar",
             Panel::RightPanel => "toggle-right",
+            Panel::AgentPanel => "toggle-agent",
         };
         self.icon_button(
             id,
@@ -1122,6 +1147,7 @@ impl Render for Shell {
         let standard = tokens.duration_ms.standard();
         let sidebar_width = self.drawn_width(Panel::Sidebar, standard, window);
         let right_width = self.drawn_width(Panel::RightPanel, standard, window);
+        let agent_width = self.drawn_width(Panel::AgentPanel, standard, window);
         let sidebar_open = self.layout.is_open(Panel::Sidebar);
 
         // Built before the column chain: the headers bind listeners, and the
@@ -1150,6 +1176,8 @@ impl Render for Shell {
             sidebar_width.map(|_| self.handle(Panel::Sidebar, cx).into_any_element());
         let right_handle =
             right_width.map(|_| self.handle(Panel::RightPanel, cx).into_any_element());
+        let agent_handle =
+            agent_width.map(|_| self.handle(Panel::AgentPanel, cx).into_any_element());
 
         v_flex()
             .key_context(CONTEXT)
@@ -1261,6 +1289,23 @@ impl Render for Shell {
                                     ),
                             )
                             .children(right_handle)
+                    }))
+                    .children(agent_width.map(|width| {
+                        div()
+                            .w(width)
+                            .h_full()
+                            .flex_shrink_0()
+                            .relative()
+                            .overflow_hidden()
+                            .border_l_1()
+                            .border_color(tokens.colors().border_subtle)
+                            .child(
+                                div()
+                                    .w(self.layout.size(Panel::AgentPanel))
+                                    .h_full()
+                                    .child(self.agent.clone()),
+                            )
+                            .children(agent_handle)
                     })),
             )
             // A dialog is not drawn by the toolkit's `Root` on its own: the

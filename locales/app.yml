@@ -138,6 +138,9 @@ panel.sidebar:
 panel.right:
   en: Details
   ja: 詳細
+panel.agent:
+  en: Agent
+  ja: エージェント
 
 error.no_token:
   en: "No GitHub token. Set E1_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login`."
@@ -484,15 +487,6 @@ ask.title:
 ask.button:
   en: Ask AI
   ja: AIに聞く
-ask.placeholder:
-  en: What should it look at?
-  ja: 何を見てほしい？
-ask.started:
-  en: "Started %{agent} in Terminal."
-  ja: "%{agent} をターミナルで開始しました"
-ask.failed:
-  en: "Could not start it: %{detail}"
-  ja: "開始できませんでした: %{detail}"
 ask.log_source:
   en: "From the log of the job \"%{job}\", lines %{from}–%{to}"
   ja: "ジョブ \"%{job}\" のログ %{from}–%{to} 行目"
@@ -526,6 +520,24 @@ ask.file_source:
 ask.diff_source:
   en: "From the diff of %{path}"
   ja: "%{path} の差分"
+ask.chat.title:
+  en: Ask
+  ja: Ask
+ask.chat.placeholder:
+  en: Ask, build, or review…
+  ja: 質問、実装、レビューを依頼…
+ask.chat.empty:
+  en: Explore this item with your agent.
+  ja: この項目についてエージェントと話せます
+ask.chat.latest:
+  en: Jump to latest
+  ja: 最新へ移動
+ask.chat.no_agent:
+  en: No agent found
+  ja: エージェントが見つかりません
+ask.chat.demo_reply:
+  en: "The demo conversation is ready. Your next message will resume this same CLI session."
+  ja: "デモ会話を開始しました。次のメッセージも同じCLIセッションに続きます。"
 detail.review.comment:
   en: Comment
   ja: コメント

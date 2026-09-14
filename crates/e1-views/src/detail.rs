@@ -29,7 +29,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::text::TextView;
-use gpui_component::{Icon, IconName, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 use std::collections::HashSet;
 
 /// A turning spinner for what is still running: the toolkit's, on the
@@ -68,12 +68,8 @@ enum Tab {
 
 /// What the column tells the window about.
 pub enum DetailEvent {
-    /// The reader picked which agent CLI an ask goes to. The window keeps
-    /// it, because the window owns the settings.
-    AgentChosen(e1_ui::agents::Kind),
-    /// They picked which model that CLI is asked with, or how much
-    /// thinking it is allowed. Kept the same way, and per CLI.
-    Tuned(e1_ui::agents::Kind, e1_ui::agents::Tuning),
+    /// Open the far-right agent pane on this context.
+    Ask(e1_ui::agents::Ask),
 }
 
 impl EventEmitter<DetailEvent> for Detail {}
@@ -210,18 +206,9 @@ pub struct Detail {
     /// Open the ask at the next frame, which is the first place with a
     /// window to open it from.
     ask_soon: bool,
-    /// Whether the dialog's one CLI row is folded open into the list.
-    agents_open: bool,
-    /// Whether the dialog shows the excerpt. Folded to start: the reader
-    /// picked it out a moment ago and knows what it says.
-    excerpt_open: bool,
     /// Pick lines and open the box the moment there are lines. A launch
     /// argument asks for this; a reader picks their own.
     ask_when_ready: bool,
-    /// What the reader wants asked.
-    ask_input: Entity<TextareaState>,
-    /// What came of the last ask, to say so.
-    ask_said: Option<String>,
     /// What the review controls have to say for themselves, when a review
     /// could not be sent as asked.
     review_says: Option<String>,
@@ -285,36 +272,11 @@ impl Detail {
         })
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx));
-        let ask_input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder(rust_i18n::t!("ask.placeholder").to_string())
-                .auto_grow(3, 10)
-        });
         let review_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder(rust_i18n::t!("diff.comment.placeholder").to_string())
                 .auto_grow(2, 6)
         });
-        // ⌘⏎ sends, as it does on a comment; a plain ⏎ is a newline,
-        // because a question worth asking often runs to two lines.
-        cx.subscribe_in(
-            &ask_input,
-            window,
-            |this, _, event: &InputEvent, window, cx| {
-                if matches!(
-                    event,
-                    InputEvent::PressEnter {
-                        secondary: true,
-                        ..
-                    }
-                ) && let Some(agent) = this.store.read(cx).chosen_agent().cloned()
-                    && this.send_ask(agent, cx)
-                {
-                    window.close_dialog(cx);
-                }
-            },
-        )
-        .detach();
         cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -350,11 +312,7 @@ impl Detail {
             diff_selection: None,
             offer_at: None,
             ask_soon: false,
-            agents_open: false,
-            excerpt_open: false,
             ask_when_ready: false,
-            ask_input,
-            ask_said: None,
             review_says: None,
             log_lines: Vec::new(),
             log_previous: None,
@@ -394,7 +352,6 @@ impl Detail {
             (Some((anchor, _)), true) => Some((anchor.min(index), anchor.max(index))),
             _ => Some((index, index)),
         };
-        self.ask_said = None;
         cx.notify();
     }
 
@@ -421,7 +378,6 @@ impl Detail {
             || self.code_selection.is_some()
             || self.diff_selection.is_some();
         self.offer_at = anything.then_some(at);
-        self.ask_said = None;
         cx.notify();
     }
 
@@ -465,7 +421,7 @@ impl Detail {
     /// opens the ask on what was picked.
     fn picked_offer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         // Nothing to offer when there is nowhere to send it.
-        if self.store.read(cx).agents().is_empty() {
+        if !self.store.read(cx).has_chat_agent() {
             return None;
         }
         let at = self.offer_at?;
@@ -506,7 +462,7 @@ impl Detail {
     /// What the ask box would send, from what is on screen and picked.
     fn ask(&self, cx: &App) -> Option<e1_ui::agents::Ask> {
         let store = self.store.read(cx);
-        let question = self.ask_input.read(cx).value().to_string();
+        let question = String::new();
         match self.showing.as_ref()? {
             Showing::Item(key) => {
                 let detail = store.detail(key).and_then(|fetch| fetch.value())?;
@@ -679,67 +635,6 @@ impl Detail {
             }
             Showing::Commit { .. } => None,
         }
-    }
-
-    /// Remember which model this CLI is asked with, and how much thinking
-    /// it is allowed. Kept in the store for this ask and in the settings
-    /// for the next one, exactly as the choice of CLI is.
-    fn tune(
-        &mut self,
-        kind: e1_ui::agents::Kind,
-        tuning: e1_ui::agents::Tuning,
-        cx: &mut Context<Self>,
-    ) {
-        self.store
-            .update(cx, |store, cx| store.tune(kind, tuning.clone(), cx));
-        cx.emit(DetailEvent::Tuned(kind, tuning));
-        cx.notify();
-    }
-
-    /// Hand the ask to one of the CLIs and start a session on it.
-    fn send_ask(&mut self, agent: e1_ui::agents::Agent, cx: &mut Context<Self>) -> bool {
-        let Some(ask) = self.ask(cx) else {
-            return false;
-        };
-        // Which one was picked becomes the default: the next ask goes
-        // there without being asked, and the box is where it is changed.
-        self.store
-            .update(cx, |store, cx| store.choose_agent(agent.kind, cx));
-        cx.emit(DetailEvent::AgentChosen(agent.kind));
-        let workdir = ask
-            .repo
-            .as_ref()
-            .and_then(|repo| e1_ui::agents::checkout_in(repo, &e1_ui::agents::checkout_roots()));
-        let directory = e1_ui::Paths::from_env()
-            .map(|paths| paths.root().join("asks"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("e1-asks"));
-        let tuning = self.store.read(cx).tuning(agent.kind);
-        let started =
-            match e1_ui::agents::start(&agent, &ask, &tuning, workdir.as_deref(), &directory) {
-                Ok(path) => {
-                    tracing::info!(?path, agent = agent.kind.id(), "started an agent");
-                    // The pick has been asked about; a fresh one starts a fresh
-                    // ask.
-                    self.picked_text = None;
-                    self.log_selection = None;
-                    self.code_selection = None;
-                    self.diff_selection = None;
-                    self.offer_at = None;
-                    self.ask_said = None;
-                    true
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "could not start an agent");
-                    // Said inside the dialog, which stays open: there is nowhere
-                    // else left to say it, and a failure the reader cannot see
-                    // is a click that did nothing.
-                    self.ask_said =
-                        Some(rust_i18n::t!("ask.failed", detail = error.to_string()).to_string());
-                    false
-                }
-            };
-        cx.notify();
-        started
     }
 
     /// Pick a few lines and open the ask box as soon as there are lines to
@@ -3695,332 +3590,15 @@ impl Detail {
 }
 
 impl Detail {
-    /// Open the ask as a dialog over the window.
-    ///
-    /// A dialog rather than the popover it started as: what is being sent
-    /// is worth showing — the context, the excerpt, which CLI — and a
-    /// panel that closes when the pointer strays is the wrong shape for
-    /// something a reader reads before sending.
-    fn open_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ask) = self.ask(cx) else {
-            return;
-        };
-        if self.store.read(cx).agents().is_empty() {
-            return;
+    /// Hand the current context to the far-right agent pane.
+    fn open_ask(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ask) = self.ask(cx)
+            && self.store.read(cx).has_chat_agent()
+        {
+            self.offer_at = None;
+            cx.emit(DetailEvent::Ask(ask));
+            cx.notify();
         }
-        self.agents_open = false;
-        self.excerpt_open = false;
-        self.ask_said = None;
-        let this = cx.entity();
-        let store = self.store.clone();
-        let input = self.ask_input.clone();
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let tokens = Tokens::global(cx).clone();
-            let agents = store.read(cx).agents().to_vec();
-            let chosen = store.read(cx).chosen_agent().map(|agent| agent.kind);
-            let facts: Vec<AnyElement> = ask
-                .facts
-                .iter()
-                .map(|(name, value)| {
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .text_size(px(11.5))
-                        .child(
-                            div()
-                                .w(px(96.))
-                                .flex_shrink_0()
-                                .text_color(tokens.colors().text_muted)
-                                .child(name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(tokens.colors().text_secondary)
-                                .child(value.clone()),
-                        )
-                        .into_any_element()
-                })
-                .collect();
-            // One row saying where the ask will go, which opens into the
-            // rest. A list is not worth its height until it is wanted.
-            let open = this.read(cx).agents_open;
-            let row = |agent: e1_ui::agents::Agent, index: usize, folds: bool| {
-                let this = this.clone();
-                let marked = Some(agent.kind) == chosen;
-                let send = agent.clone();
-                h_flex()
-                    .id(("dialog-agent", index))
-                    .w_full()
-                    .px_2()
-                    .py_1p5()
-                    .gap_2()
-                    .items_center()
-                    .rounded(px(tokens.radius.row))
-                    .cursor_pointer()
-                    .when(folds, |this| {
-                        this.border_1().border_color(tokens.colors().border_strong)
-                    })
-                    .when(marked && !folds, |this| {
-                        this.bg(tokens.colors().row_active())
-                    })
-                    .hover(|this| this.bg(tokens.colors().row_hover()))
-                    .child(
-                        Icon::new(IconName::SquareTerminal)
-                            .size_3p5()
-                            .text_color(tokens.colors().accent),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.5))
-                            .text_color(tokens.colors().text_primary)
-                            .child(agent.label()),
-                    )
-                    .when(folds, |this| {
-                        this.child(
-                            Icon::new(if open {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .size_3()
-                            .text_color(tokens.colors().text_muted),
-                        )
-                    })
-                    .on_click(move |_, window, cx| {
-                        if folds {
-                            this.update(cx, |this, cx| {
-                                this.agents_open = !this.agents_open;
-                                cx.notify();
-                            });
-                        } else if this.update(cx, |this, cx| this.send_ask(send.clone(), cx)) {
-                            window.close_dialog(cx);
-                        }
-                    })
-                    .into_any_element()
-            };
-            let mut rows: Vec<AnyElement> = Vec::new();
-            if let Some(agent) = agents
-                .iter()
-                .find(|agent| Some(agent.kind) == chosen)
-                .or_else(|| agents.first())
-            {
-                rows.push(row(agent.clone(), 0, agents.len() > 1));
-            }
-            if open {
-                rows.extend(
-                    agents
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .filter(|(_, agent)| Some(agent.kind) != chosen)
-                        .map(|(index, agent)| row(agent, index + 1, false)),
-                );
-            }
-            // Which model, and how much thinking: the choices the CLI the
-            // ask is going to takes, as chips above the row that sends.
-            // The first chip is always the CLI's own default, which puts
-            // nothing on the command line; a CLI that takes neither — or
-            // that names its thinking in its model names, as Cursor does —
-            // gets no strip at all.
-            let tuning = chosen
-                .map(|kind| store.read(cx).tuning(kind))
-                .unwrap_or_default();
-            let mut strips: Vec<AnyElement> = Vec::new();
-            if let Some(kind) = chosen {
-                let mut strip =
-                    |group: &'static str,
-                     title: String,
-                     choices: &'static [e1_ui::agents::Choice],
-                     picked: Option<String>,
-                     set: fn(&mut e1_ui::agents::Tuning, Option<String>)| {
-                        if choices.is_empty() {
-                            return;
-                        }
-                        let chips: Vec<AnyElement> = std::iter::once(None)
-                            .chain(choices.iter().map(Some))
-                            .enumerate()
-                            .map(|(index, choice)| {
-                                let (label, id) = match choice {
-                                    Some(choice) => {
-                                        (choice.label.to_string(), Some(choice.id.to_string()))
-                                    }
-                                    None => (rust_i18n::t!("ask.default").to_string(), None),
-                                };
-                                let marked = id == picked;
-                                let this = this.clone();
-                                let mut next = tuning.clone();
-                                set(&mut next, id);
-                                div()
-                                    .id((group, index))
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(tokens.radius.control()))
-                                    .cursor_pointer()
-                                    .border_1()
-                                    .text_size(px(11.5))
-                                    .border_color(if marked {
-                                        tokens.colors().accent
-                                    } else {
-                                        tokens.colors().border_subtle
-                                    })
-                                    .text_color(if marked {
-                                        tokens.colors().accent
-                                    } else {
-                                        tokens.colors().text_secondary
-                                    })
-                                    .hover(|this| this.bg(tokens.colors().row_hover()))
-                                    .child(label)
-                                    .on_click(move |_, _, cx| {
-                                        let next = next.clone();
-                                        this.update(cx, |this, cx| this.tune(kind, next, cx));
-                                    })
-                                    .into_any_element()
-                            })
-                            .collect();
-                        strips.push(
-                            v_flex()
-                                .w_full()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(tokens.colors().text_muted)
-                                        .child(title),
-                                )
-                                .child(h_flex().w_full().flex_wrap().gap_1().children(chips))
-                                .into_any_element(),
-                        );
-                    };
-                strip(
-                    "ask-model",
-                    rust_i18n::t!("ask.model").to_string(),
-                    kind.models(),
-                    tuning.model().map(str::to_string),
-                    |tuning, value| tuning.model = value,
-                );
-                strip(
-                    "ask-effort",
-                    rust_i18n::t!("ask.effort").to_string(),
-                    kind.efforts(),
-                    tuning.effort().map(str::to_string),
-                    |tuning, value| tuning.effort = value,
-                );
-            }
-            let excerpt = ask.excerpt.clone().unwrap_or_default();
-            let excerpt_open = this.read(cx).excerpt_open;
-            let this_for_fold = this.clone();
-            dialog
-                .w(px(560.))
-                // Opaque: the dialog's own default is the window's glass,
-                // and a panel that shows the page through it is unreadable.
-                .bg(tokens.colors().popover())
-                .title(rust_i18n::t!("ask.title").to_string())
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_3()
-                        .child(
-                            // The toolkit's own field draws a border and a
-                            // focus ring, and the two read as one crooked
-                            // outline over an opaque panel. This is the
-                            // shape the comment composer uses.
-                            div()
-                                .w_full()
-                                .p_1()
-                                .rounded(px(tokens.radius.control() + 2.))
-                                .bg(tokens.colors().bg_surface)
-                                .border_1()
-                                .border_color(tokens.colors().border_strong)
-                                .child(Textarea::new(&input)),
-                        )
-                        .when(!excerpt.trim().is_empty(), |this| {
-                            let lines = excerpt.lines().count();
-                            let open = excerpt_open;
-                            let fold = this_for_fold.clone();
-                            this.child(
-                                v_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .child(
-                                        h_flex()
-                                            .id("ask-excerpt")
-                                            .w_full()
-                                            .gap_1()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.))
-                                            .text_color(tokens.colors().text_muted)
-                                            .child(
-                                                Icon::new(if open {
-                                                    IconName::ChevronDown
-                                                } else {
-                                                    IconName::ChevronRight
-                                                })
-                                                .size_3(),
-                                            )
-                                            .children(ask.source.clone())
-                                            .child(
-                                                rust_i18n::t!("ask.excerpt_lines", count = lines)
-                                                    .to_string(),
-                                            )
-                                            .on_click(move |_, _, cx| {
-                                                fold.update(cx, |this, cx| {
-                                                    this.excerpt_open = !this.excerpt_open;
-                                                    cx.notify();
-                                                });
-                                            }),
-                                    )
-                                    .when(open, |this| {
-                                        this.child(
-                                            div()
-                                                .w_full()
-                                                .max_h(px(200.))
-                                                .p_2()
-                                                .rounded(px(tokens.radius.control()))
-                                                .bg(tokens.colors().code_bg)
-                                                .font_family(
-                                                    gpui_component::Theme::global(cx)
-                                                        .mono_font_family
-                                                        .clone(),
-                                                )
-                                                .text_size(px(11.))
-                                                .text_color(tokens.colors().text_secondary)
-                                                .overflow_hidden()
-                                                .child(excerpt.clone()),
-                                        )
-                                    }),
-                            )
-                        })
-                        .when(!facts.is_empty(), |this| {
-                            this.child(
-                                v_flex()
-                                    .w_full()
-                                    .gap_0p5()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(tokens.colors().text_muted)
-                                            .child(rust_i18n::t!("ask.context").to_string()),
-                                    )
-                                    .children(facts),
-                            )
-                        })
-                        .children(strips)
-                        .children(this.read(cx).ask_said.clone().map(|said| {
-                            div()
-                                .w_full()
-                                .text_size(px(11.5))
-                                .text_color(tokens.colors().status_error)
-                                .child(said)
-                        }))
-                        .child(v_flex().w_full().gap_0p5().children(rows)),
-                )
-        });
-        cx.notify();
     }
 
     /// One commit: what it says, who wrote it, and what it changed.
@@ -4264,13 +3842,11 @@ impl Render for Detail {
             ),
         };
         let body = crate::fade::fade_in(id, body, cx);
-        // The ask strip sits under whatever the column is showing, so
-        // there is one of it however the column got here.
-        // Only once there is a CLI to offer: the log can land before the
-        // machine has been looked at.
-        if self.ask_soon && !self.store.read(cx).agents().is_empty() {
-            // Opening a dialog needs a window and this is a draw; the next
-            // frame is where it can be done.
+        // The scripted demo can request the same Ask action as the button.
+        // Only offer it once a CLI has been discovered.
+        if self.ask_soon && self.store.read(cx).has_chat_agent() {
+            // Opening the sibling pane while this child is rendering would
+            // mutate the shell mid-draw, so emit on the next frame.
             self.ask_soon = false;
             let this = cx.entity();
             window.defer(cx, move |window, cx| {
