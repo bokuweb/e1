@@ -1008,17 +1008,142 @@ impl GitHub for Scripted {
         Ok(vec![
             Project {
                 id: format!("PVT_{owner}_1"),
+                owner: owner.to_string(),
                 title: "Roadmap".into(),
                 number: 1,
                 closed: false,
+                html_url: format!("https://github.com/users/{owner}/projects/1"),
             },
             Project {
                 id: format!("PVT_{owner}_2"),
+                owner: owner.to_string(),
                 title: "Bugs".into(),
                 number: 2,
                 closed: false,
+                html_url: format!("https://github.com/users/{owner}/projects/2"),
             },
         ])
+    }
+
+    fn all_projects(&self) -> Result<Vec<Project>> {
+        self.projects("bokuweb")
+    }
+
+    fn project(&self, project: &Project) -> Result<ProjectBoard> {
+        let data = self.guard()?;
+        let items = data
+            .items
+            .iter()
+            .take(12)
+            .map(|item| ProjectItem {
+                id: format!("PVTI_{}_{}", item.repo.name, item.number),
+                title: item.title.clone(),
+                kind: if item.is_pull() {
+                    ProjectItemKind::PullRequest
+                } else {
+                    ProjectItemKind::Issue
+                },
+                repo: Some(item.repo.clone()),
+                number: Some(item.number),
+                state: Some(format!("{:?}", item.status).to_uppercase()),
+                status: Some(if item.status == Status::Closed {
+                    "Done".into()
+                } else {
+                    "In progress".into()
+                }),
+                fields: vec![
+                    ProjectFieldValue {
+                        field_id: "status".into(),
+                        field_name: "Status".into(),
+                        value: ProjectValue::SingleSelect(if item.status == Status::Closed {
+                            "Done".into()
+                        } else {
+                            "In progress".into()
+                        }),
+                    },
+                    ProjectFieldValue {
+                        field_id: "iteration".into(),
+                        field_name: "Iteration".into(),
+                        value: ProjectValue::Iteration {
+                            title: "September".into(),
+                            start_date: "2026-09-01".into(),
+                            duration: 30,
+                        },
+                    },
+                ],
+                html_url: Some(item.html_url.clone()),
+                archived: false,
+            })
+            .collect();
+        Ok(ProjectBoard {
+            project: project.clone(),
+            items,
+            fields: vec![
+                ProjectField {
+                    id: "status".into(),
+                    name: "Status".into(),
+                    data_type: "SINGLE_SELECT".into(),
+                    options: ["Todo", "In progress", "Done"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, name)| ProjectFieldOption {
+                            id: format!("status-{index}"),
+                            name: name.into(),
+                            color: "GRAY".into(),
+                        })
+                        .collect(),
+                },
+                ProjectField {
+                    id: "iteration".into(),
+                    name: "Iteration".into(),
+                    data_type: "ITERATION".into(),
+                    options: Vec::new(),
+                },
+            ],
+            views: vec![
+                ProjectView {
+                    id: "table".into(),
+                    name: "Table".into(),
+                    number: 1,
+                    layout: ProjectViewLayout::Table,
+                    filter: None,
+                    group_by: None,
+                    vertical_group_by: None,
+                    visible_fields: vec!["status".into()],
+                },
+                ProjectView {
+                    id: "board".into(),
+                    name: "Kanban".into(),
+                    number: 2,
+                    layout: ProjectViewLayout::Board,
+                    filter: None,
+                    group_by: None,
+                    vertical_group_by: Some("status".into()),
+                    visible_fields: vec!["status".into()],
+                },
+                ProjectView {
+                    id: "roadmap".into(),
+                    name: "Roadmap".into(),
+                    number: 3,
+                    layout: ProjectViewLayout::Roadmap,
+                    filter: None,
+                    group_by: None,
+                    vertical_group_by: None,
+                    visible_fields: Vec::new(),
+                },
+            ],
+        })
+    }
+
+    fn set_project_single_select(
+        &self,
+        _project_id: &str,
+        _item_id: &str,
+        _field_id: &str,
+        _option_id: Option<&str>,
+    ) -> Result<()> {
+        let _guard = self.guard()?;
+        Ok(())
     }
 
     fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
@@ -1211,6 +1336,11 @@ mod tests {
 
         let projects = github.projects("bokuweb").unwrap();
         assert_eq!(projects.len(), 2);
+        assert_eq!(github.all_projects().unwrap(), projects);
+        let board = github.project(&projects[0]).unwrap();
+        assert_eq!(board.project, projects[0]);
+        assert!(!board.items.is_empty());
+        assert!(board.items.iter().all(|item| item.item_key().is_some()));
         let node = github.item(&e1, 2).unwrap().node_id;
         github.add_to_project(&projects[0].id, &node).unwrap();
         let memberships = github.item_projects(&e1, 2).unwrap();

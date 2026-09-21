@@ -14,15 +14,18 @@ pub enum Section {
     Reviews,
     /// Open issues assigned to the viewer.
     Assigned,
+    /// The viewer's GitHub Projects.
+    Projects,
 }
 
 impl Section {
-    /// All four, in sidebar order.
+    /// All fixed rows, in sidebar order.
     pub const ALL: &'static [Section] = &[
         Section::Inbox,
         Section::MyPulls,
         Section::Reviews,
         Section::Assigned,
+        Section::Projects,
     ];
 
     /// The locale key for the row's label.
@@ -32,6 +35,7 @@ impl Section {
             Self::MyPulls => "sidebar.my_pulls",
             Self::Reviews => "sidebar.reviews",
             Self::Assigned => "sidebar.assigned",
+            Self::Projects => "sidebar.projects",
         }
     }
 
@@ -43,15 +47,16 @@ impl Section {
             Self::MyPulls => icon::PULL_REQUEST,
             Self::Reviews => icon::EYE,
             Self::Assigned => icon::USER_CHECK,
+            Self::Projects => icon::PROJECT,
         }
     }
 
-    /// The search that lists the section, or `None` for the inbox, which
-    /// is its own endpoint. `@me` rather than the login, so the query is
-    /// the same one a person would type into GitHub.
+    /// The search that lists an item section, or `None` for a section with
+    /// its own endpoint. `@me` rather than the login keeps the query equal
+    /// to what a person would type into GitHub.
     pub fn query(self) -> Option<&'static str> {
         match self {
-            Self::Inbox => None,
+            Self::Inbox | Self::Projects => None,
             Self::MyPulls => Some("is:pr is:open author:@me"),
             Self::Reviews => Some("is:pr is:open review-requested:@me"),
             Self::Assigned => Some("is:issue is:open assignee:@me"),
@@ -320,9 +325,13 @@ mod tests {
     }
 
     #[test]
-    fn every_section_but_the_inbox_is_a_search() {
+    fn item_sections_are_searches_but_inbox_and_projects_are_not() {
         assert_eq!(Section::Inbox.query(), None);
-        for section in Section::ALL.iter().filter(|s| **s != Section::Inbox) {
+        assert_eq!(Section::Projects.query(), None);
+        for section in Section::ALL
+            .iter()
+            .filter(|s| !matches!(s, Section::Inbox | Section::Projects))
+        {
             let query = section.query().unwrap();
             assert!(query.contains("is:open"), "{section:?}: {query}");
             assert!(query.contains("@me"), "{section:?}: {query}");

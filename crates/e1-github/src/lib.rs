@@ -268,6 +268,39 @@ pub trait GitHub: Send + Sync {
         let _ = owner;
         Err(Error::Unsupported("list projects"))
     }
+    /// Every Project the viewer can reach: their own and those belonging to
+    /// organisations they are a member of.
+    fn all_projects(&self) -> Result<Vec<Project>> {
+        let viewer = self.viewer()?;
+        self.projects(&viewer.login)
+    }
+    /// One Project and the items it contains.
+    fn project(&self, project: &Project) -> Result<ProjectBoard> {
+        let _ = project;
+        Err(Error::Unsupported("read a project"))
+    }
+    /// One page of a Project. Sources that do not support incremental reads
+    /// may return their complete [`ProjectBoard`] as a single page.
+    fn project_page(&self, project: &Project, after: Option<&str>) -> Result<ProjectPage> {
+        if after.is_some() {
+            return Err(Error::Unsupported("page through a project"));
+        }
+        Ok(ProjectPage {
+            board: self.project(project)?,
+            next_cursor: None,
+        })
+    }
+    /// Set or clear one single-select field on an item inside a Project.
+    fn set_project_single_select(
+        &self,
+        project_id: &str,
+        item_id: &str,
+        field_id: &str,
+        option_id: Option<&str>,
+    ) -> Result<()> {
+        let _ = (project_id, item_id, field_id, option_id);
+        Err(Error::Unsupported("update a project field"))
+    }
     /// The projects an item is in.
     fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
         let _ = (repo, number);

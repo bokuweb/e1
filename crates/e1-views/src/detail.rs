@@ -18,16 +18,18 @@ use crate::avatar::avatar;
 use crate::store::{FileKey, ItemKey, Store, StoreEvent};
 use chrono::Utc;
 use e1_github::{
-    CheckState, Comment, FileStatus, JobStep, MergeMethod, PullFile, RepoId, ReviewComment,
-    ReviewEvent, Side,
+    CheckState, Comment, FileStatus, JobStep, MergeMethod, Project, ProjectItem, ProjectItemKind,
+    ProjectView, ProjectViewLayout, PullFile, RepoId, ReviewComment, ReviewEvent, Side,
 };
 use e1_ui::Tokens;
 use e1_ui::diff;
+use e1_ui::project::{RoadmapRow, board_columns, roadmap, visible_item_indices};
 use e1_ui::rows::{Glyph, LabelChip};
 use e1_ui::time::age;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
 use gpui_component::{Icon, IconName, StyledExt as _, h_flex, v_flex};
 use std::collections::HashSet;
@@ -56,6 +58,13 @@ const DIFF_ROW: Pixels = px(22.);
 
 /// How tall a line of a file is.
 const CODE_ROW: Pixels = px(20.);
+
+/// How tall one item in a Project is.
+const PROJECT_ROW: Pixels = px(60.);
+
+/// A fixed-height Kanban card; two title lines fit without abandoning list
+/// virtualization.
+const PROJECT_CARD: Pixels = px(82.);
 
 /// Which half of a pull is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +98,36 @@ enum Showing {
     },
     /// One commit out of a repository's history.
     Commit { repo: RepoId, sha: String },
+    /// A GitHub Project and its items.
+    Project(Project),
+}
+
+/// A Project card while it is being moved between Kanban columns.
+#[derive(Clone)]
+struct DraggedProjectItem {
+    project: Project,
+    item_id: String,
+    field_id: String,
+    source_value: Option<String>,
+    title: SharedString,
+}
+
+impl Render for DraggedProjectItem {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = Tokens::global(cx).clone();
+        div()
+            .w(px(280.))
+            .px_3()
+            .py_2()
+            .rounded(px(tokens.radius.row))
+            .border_1()
+            .border_color(tokens.colors().accent)
+            .bg(tokens.colors().bg_surface)
+            .shadow_md()
+            .text_size(px(12.5))
+            .text_color(tokens.colors().text_primary)
+            .child(self.title.clone())
+    }
 }
 
 /// One row of the log screen.
@@ -147,6 +186,10 @@ enum Picker {
 pub struct Detail {
     store: Entity<Store>,
     showing: Option<Showing>,
+    /// The saved Project view selected in the Project header.
+    project_view: Option<String>,
+    /// The Project and saved view an item card was opened from.
+    project_return: Option<(Project, Option<String>)>,
     tab: Tab,
     /// The files whose diffs are folded. Everything starts open: the list is
     /// virtualized, so a hundred files cost nothing until they are scrolled
@@ -286,6 +329,8 @@ impl Detail {
         Self {
             store,
             showing: None,
+            project_view: None,
+            project_return: None,
             tab: Tab::Conversation,
             collapsed: HashSet::new(),
             diff_rows: Vec::new(),
@@ -633,7 +678,7 @@ impl Detail {
                     ],
                 })
             }
-            Showing::Commit { .. } => None,
+            Showing::Commit { .. } | Showing::Project(_) => None,
         }
     }
 
@@ -959,6 +1004,24 @@ impl Detail {
 
     /// Show an item, fetching it if it never has been.
     pub fn show(&mut self, key: ItemKey, is_pull: Option<bool>, cx: &mut Context<Self>) {
+        self.project_return = None;
+        self.show_item(key, is_pull, cx);
+    }
+
+    /// Show an item reached from a Project while remembering the exact saved
+    /// view the reader should return to.
+    fn show_project_item(
+        &mut self,
+        project: Project,
+        key: ItemKey,
+        is_pull: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_return = Some((project, self.project_view.clone()));
+        self.show_item(key, is_pull, cx);
+    }
+
+    fn show_item(&mut self, key: ItemKey, is_pull: Option<bool>, cx: &mut Context<Self>) {
         let showing = Showing::Item(key.clone());
         if self.showing.as_ref() != Some(&showing) {
             self.tab = Tab::Conversation;
@@ -973,6 +1036,30 @@ impl Detail {
         self.showing = Some(showing);
         self.store
             .update(cx, |store, cx| store.ensure_detail(key, is_pull, cx));
+        self.rebuild(cx);
+    }
+
+    /// Show a Project and fetch its items inside the app.
+    pub fn show_project(&mut self, project: Project, cx: &mut Context<Self>) {
+        self.project_return = None;
+        if !matches!(&self.showing, Some(Showing::Project(shown)) if shown.id == project.id) {
+            self.project_view = None;
+        }
+        self.showing = Some(Showing::Project(project.clone()));
+        self.store
+            .update(cx, |store, cx| store.ensure_project(project, cx));
+        self.rebuild(cx);
+    }
+
+    /// Return from an Issue or Pull Request to the Project card that opened it.
+    fn return_to_project(&mut self, cx: &mut Context<Self>) {
+        let Some((project, view)) = self.project_return.take() else {
+            return;
+        };
+        self.project_view = view;
+        self.showing = Some(Showing::Project(project.clone()));
+        self.store
+            .update(cx, |store, cx| store.ensure_project(project, cx));
         self.rebuild(cx);
     }
 
@@ -1052,6 +1139,10 @@ impl Detail {
                 self.store
                     .update(cx, |store, cx| store.load_commit(repo, sha, cx));
             }
+            Some(Showing::Project(project)) => {
+                self.store
+                    .update(cx, |store, cx| store.load_project(project, cx));
+            }
             None => {}
         }
     }
@@ -1076,6 +1167,7 @@ impl Detail {
                 .job(repo, *job)
                 .and_then(|job| job.value())
                 .map(|job| job.html_url.clone()),
+            Showing::Project(project) => Some(project.html_url.clone()),
         }
     }
 
@@ -3252,6 +3344,24 @@ impl Detail {
             .as_ref()
             .map(|pull| self.tabs(pull.changed_files, cx));
         let showing_files = self.tab == Tab::Files && detail.pull.is_some();
+        let project_back = self.project_return.as_ref().map(|(project, _)| {
+            let label = rust_i18n::t!("project.back", project = project.title.clone()).to_string();
+            h_flex()
+                .id("project-back")
+                .self_start()
+                .gap_1()
+                .items_center()
+                .px_2()
+                .py_1()
+                .rounded(px(tokens.radius.control()))
+                .cursor_pointer()
+                .text_size(px(11.5))
+                .text_color(tokens.colors().text_secondary)
+                .hover(|this| this.bg(tokens.colors().row_hover()))
+                .child(Icon::new(IconName::ChevronLeft).size_3p5())
+                .child(label)
+                .on_click(cx.listener(|this, _, _, cx| this.return_to_project(cx)))
+        });
 
         let head = v_flex()
             .w_full()
@@ -3261,6 +3371,7 @@ impl Detail {
             .gap_2()
             .border_b_1()
             .border_color(tokens.colors().border_subtle)
+            .children(project_back)
             .child(
                 h_flex()
                     .gap_2()
@@ -3516,6 +3627,741 @@ impl Detail {
                     .child(Textarea::new(&self.composer))
                     .child(buttons.pr_1().pb_0p5()),
             )
+            .into_any_element()
+    }
+
+    /// One item inside a Project. Issues and pulls lead into the same native
+    /// detail this column already uses; draft and redacted items are read-only.
+    fn project_item_row(
+        &mut self,
+        project_id: &str,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let loaded: Option<(ProjectItem, Project)> = self
+            .store
+            .read(cx)
+            .project_board(project_id)
+            .and_then(|fetch| fetch.value())
+            .and_then(|board| {
+                board
+                    .items
+                    .get(index)
+                    .cloned()
+                    .map(|item| (item, board.project.clone()))
+            });
+        let Some((item, project)) = loaded else {
+            return div().h(PROJECT_ROW).into_any_element();
+        };
+        let closed = item.state.as_deref() == Some("CLOSED");
+        let (icon_path, icon_color) = match item.kind {
+            ProjectItemKind::Issue if closed => {
+                (e1_ui::assets::icon::CIRCLE_CHECK, tokens.colors().accent)
+            }
+            ProjectItemKind::Issue => {
+                (e1_ui::assets::icon::CIRCLE_DOT, tokens.colors().status_done)
+            }
+            ProjectItemKind::PullRequest if closed => (
+                e1_ui::assets::icon::PULL_REQUEST_CLOSED,
+                tokens.colors().status_error,
+            ),
+            ProjectItemKind::PullRequest => (
+                e1_ui::assets::icon::PULL_REQUEST,
+                tokens.colors().status_done,
+            ),
+            ProjectItemKind::DraftIssue | ProjectItemKind::Redacted => {
+                (e1_ui::assets::icon::PROJECT, tokens.colors().text_muted)
+            }
+        };
+        let destination = item
+            .item_key()
+            .map(|key| (key, item.kind == ProjectItemKind::PullRequest));
+        let title = if item.title.is_empty() {
+            rust_i18n::t!("project.item.unavailable").to_string()
+        } else {
+            item.title.clone()
+        };
+        let subject = match (&item.repo, item.number) {
+            (Some(repo), Some(number)) => format!("{repo}#{number}"),
+            _ => rust_i18n::t!("project.item.draft").to_string(),
+        };
+        h_flex()
+            .id(("project-item", index))
+            .h(PROJECT_ROW)
+            .w_full()
+            .px_4()
+            .gap_2p5()
+            .items_center()
+            .when(destination.is_some(), |this| {
+                this.cursor_pointer()
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+            })
+            .when_some(destination, |this, (key, is_pull)| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.show_project_item(project.clone(), key.clone(), Some(is_pull), cx)
+                }))
+            })
+            .when(item.archived, |this| this.opacity(0.62))
+            .child(
+                Icon::empty()
+                    .path(icon_path)
+                    .size_4()
+                    .text_color(icon_color),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .overflow_hidden()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(tokens.colors().text_primary)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(tokens.colors().text_muted)
+                            .truncate()
+                            .child(subject),
+                    ),
+            )
+            .child(
+                div()
+                    .max_w(px(120.))
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(tokens.radius.control()))
+                    .bg(tokens.colors().row_hover())
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_secondary)
+                    .truncate()
+                    .child(
+                        item.status
+                            .unwrap_or_else(|| rust_i18n::t!("project.item.no_status").to_string()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// One GitHub-shaped card in a Project board column.
+    fn project_board_card(
+        &mut self,
+        project: &Project,
+        project_id: &str,
+        item_index: usize,
+        field_id: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let item = self
+            .store
+            .read(cx)
+            .project_board(project_id)
+            .and_then(|fetch| fetch.value())
+            .and_then(|board| board.items.get(item_index))
+            .cloned();
+        let Some(item) = item else {
+            return div().h(PROJECT_CARD).into_any_element();
+        };
+        let closed = item.state.as_deref() == Some("CLOSED");
+        let (icon_path, icon_color) = match item.kind {
+            ProjectItemKind::Issue if closed => {
+                (e1_ui::assets::icon::CIRCLE_CHECK, tokens.colors().accent)
+            }
+            ProjectItemKind::Issue => {
+                (e1_ui::assets::icon::CIRCLE_DOT, tokens.colors().status_done)
+            }
+            ProjectItemKind::PullRequest if closed => (
+                e1_ui::assets::icon::PULL_REQUEST_CLOSED,
+                tokens.colors().status_error,
+            ),
+            ProjectItemKind::PullRequest => (
+                e1_ui::assets::icon::PULL_REQUEST,
+                tokens.colors().status_done,
+            ),
+            ProjectItemKind::DraftIssue | ProjectItemKind::Redacted => {
+                (e1_ui::assets::icon::PROJECT, tokens.colors().text_muted)
+            }
+        };
+        let destination = item
+            .item_key()
+            .map(|key| (key, item.kind == ProjectItemKind::PullRequest));
+        let subject = match (&item.repo, item.number) {
+            (Some(repo), Some(number)) => format!("{} #{}", repo.name, number),
+            _ => rust_i18n::t!("project.item.draft").to_string(),
+        };
+        let source_value = item
+            .fields
+            .iter()
+            .find_map(|value| (value.field_id == field_id).then_some(&value.value))
+            .and_then(|value| match value {
+                e1_github::ProjectValue::SingleSelect(name) => Some(name.clone()),
+                _ => None,
+            });
+        let drag = DraggedProjectItem {
+            project: project.clone(),
+            item_id: item.id.clone(),
+            field_id: field_id.to_string(),
+            source_value,
+            title: item.title.clone().into(),
+        };
+        let origin_project = project.clone();
+        let fade_id = SharedString::from(format!("project-card:{}", item.id));
+        let card = v_flex()
+            .id(("project-card", item_index))
+            .h(PROJECT_CARD)
+            .w_full()
+            .my_1()
+            .px_3()
+            .py_2()
+            .gap_1p5()
+            .rounded(px(tokens.radius.row))
+            .border_1()
+            .border_color(tokens.colors().border_subtle)
+            .bg(tokens.colors().bg_raised)
+            .cursor_pointer()
+            .hover(|this| {
+                this.border_color(tokens.colors().text_muted)
+                    .bg(tokens.colors().row_hover())
+            })
+            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+            .when_some(destination, |this, (key, is_pull)| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.show_project_item(origin_project.clone(), key.clone(), Some(is_pull), cx)
+                }))
+            })
+            .child(
+                h_flex()
+                    .gap_1()
+                    .text_size(px(10.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(
+                        Icon::empty()
+                            .path(icon_path)
+                            .size_3()
+                            .text_color(icon_color),
+                    )
+                    .child(subject),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_size(px(12.5))
+                    .font_medium()
+                    .text_color(tokens.colors().text_primary)
+                    .child(item.title),
+            )
+            .into_any_element();
+        crate::fade::fade_in(fade_id, card, cx)
+    }
+
+    /// Cards arranged using a saved board view's vertical grouping field.
+    fn project_board_view(
+        &mut self,
+        board: &e1_github::ProjectBoard,
+        view: &ProjectView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let project_id = board.project.id.clone();
+        let project = board.project.clone();
+        let field_id = view
+            .vertical_group_by
+            .clone()
+            .or_else(|| {
+                board
+                    .fields
+                    .iter()
+                    .find(|field| field.name.eq_ignore_ascii_case("status"))
+                    .map(|field| field.id.clone())
+            })
+            .unwrap_or_default();
+        let columns = board_columns(board, view);
+        h_flex()
+            .size_full()
+            .min_w_0()
+            .items_start()
+            .gap_3()
+            .p_3()
+            .overflow_x_scrollbar()
+            .children(
+                columns
+                    .into_iter()
+                    .enumerate()
+                    .map(|(column_index, column)| {
+                        let indices = column.items;
+                        let count = indices.len();
+                        let id = project_id.clone();
+                        let card_project = project.clone();
+                        let card_field = field_id.clone();
+                        let target_name = column.name.clone();
+                        let target_option = column.option_id.clone();
+                        let drop_project = project.clone();
+                        let drop_field = field_id.clone();
+                        let drop_accent = tokens.colors().accent;
+                        let this = cx.entity();
+                        v_flex()
+                            .h_full()
+                            .w(px(300.))
+                            .flex_shrink_0()
+                            .rounded(px(tokens.radius.row + 1.))
+                            .border_1()
+                            .border_color(tokens.colors().border_subtle)
+                            .bg(tokens.colors().bg_sidebar)
+                            .drag_over::<DraggedProjectItem>(move |column, _, _, _| {
+                                column.border_color(drop_accent)
+                            })
+                            .on_drop(cx.listener(
+                                move |this, dragged: &DraggedProjectItem, _, cx| {
+                                    if dragged.project.id != drop_project.id
+                                        || dragged.field_id != drop_field
+                                        || dragged.source_value == target_name
+                                    {
+                                        return;
+                                    }
+                                    let option = target_option.clone().zip(target_name.clone());
+                                    this.store.update(cx, |store, cx| {
+                                        store.move_project_item(
+                                            drop_project.clone(),
+                                            dragged.item_id.clone(),
+                                            drop_field.clone(),
+                                            option,
+                                            cx,
+                                        )
+                                    });
+                                },
+                            ))
+                            .child(
+                                h_flex()
+                                    .h(px(42.))
+                                    .flex_shrink_0()
+                                    .px_3()
+                                    .gap_2()
+                                    .border_b_1()
+                                    .border_color(tokens.colors().border_subtle)
+                                    .text_size(px(12.))
+                                    .font_semibold()
+                                    .text_color(tokens.colors().text_secondary)
+                                    .child(
+                                        div()
+                                            .size(px(10.))
+                                            .rounded_full()
+                                            .border_2()
+                                            .border_color(tokens.colors().accent),
+                                    )
+                                    .child(column.name.unwrap_or_else(|| {
+                                        rust_i18n::t!("project.item.no_status").to_string()
+                                    }))
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .rounded_full()
+                                            .bg(tokens.colors().row_hover())
+                                            .text_color(tokens.colors().text_muted)
+                                            .child(count.to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .text_color(tokens.colors().text_muted)
+                                            .child("•••"),
+                                    ),
+                            )
+                            .child(
+                                uniform_list(
+                                    ("project-board-column", column_index),
+                                    count,
+                                    move |range, _window, cx| {
+                                        this.update(cx, |this, cx| {
+                                            range
+                                                .map(|row| {
+                                                    this.project_board_card(
+                                                        &card_project,
+                                                        &id,
+                                                        indices[row],
+                                                        &card_field,
+                                                        cx,
+                                                    )
+                                                })
+                                                .collect()
+                                        })
+                                    },
+                                )
+                                .flex_1()
+                                .min_h_0()
+                                .px_1()
+                                .w_full(),
+                            )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// One virtualized row of the native roadmap.
+    fn project_roadmap_row(
+        &mut self,
+        project_id: &str,
+        row: &RoadmapRow,
+        extent_start: chrono::NaiveDate,
+        extent_end: chrono::NaiveDate,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const LABEL_WIDTH: f32 = 210.;
+        const TRACK_WIDTH: f32 = 620.;
+        let tokens = Tokens::global(cx).clone();
+        let loaded = self
+            .store
+            .read(cx)
+            .project_board(project_id)
+            .and_then(|fetch| fetch.value())
+            .and_then(|board| {
+                board
+                    .items
+                    .get(row.item)
+                    .cloned()
+                    .map(|item| (item, board.project.clone()))
+            });
+        let Some((item, project)) = loaded else {
+            return div().h(PROJECT_ROW).into_any_element();
+        };
+        let days = (extent_end - extent_start).num_days().max(1) as f32 + 1.;
+        let left = ((row.start - extent_start).num_days() as f32 / days) * TRACK_WIDTH;
+        let width = ((((row.end - row.start).num_days() + 1) as f32 / days) * TRACK_WIDTH).max(8.);
+        let destination = item
+            .item_key()
+            .map(|key| (key, item.kind == ProjectItemKind::PullRequest));
+        let state_icon = if item.kind == ProjectItemKind::PullRequest {
+            e1_ui::assets::icon::PULL_REQUEST
+        } else {
+            e1_ui::assets::icon::CIRCLE_DOT
+        };
+        h_flex()
+            .id(("project-roadmap-item", row.item))
+            .h(PROJECT_ROW)
+            .w(px(LABEL_WIDTH + TRACK_WIDTH + 32.))
+            .px_4()
+            .gap_3()
+            .items_center()
+            .border_b_1()
+            .border_color(tokens.colors().border_subtle)
+            .when(destination.is_some(), |this| {
+                this.cursor_pointer()
+                    .hover(|this| this.bg(tokens.colors().row_hover()))
+            })
+            .when_some(destination, |this, (key, is_pull)| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.show_project_item(project.clone(), key.clone(), Some(is_pull), cx)
+                }))
+            })
+            .child(
+                v_flex()
+                    .w(px(LABEL_WIDTH))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .gap_0p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .child(
+                                Icon::empty()
+                                    .path(state_icon)
+                                    .size_3()
+                                    .text_color(tokens.colors().status_done),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.5))
+                                    .text_color(tokens.colors().text_primary)
+                                    .child(item.title),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(tokens.colors().text_muted)
+                            .child(format!("{} – {}", row.start, row.end)),
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w(px(TRACK_WIDTH))
+                    .h(px(22.))
+                    .flex_shrink_0()
+                    .rounded(px(tokens.radius.control()))
+                    .bg(tokens.colors().bg_sidebar)
+                    .children((1..12).map(|tick| {
+                        div()
+                            .absolute()
+                            .left(px(TRACK_WIDTH * tick as f32 / 12.))
+                            .top_0()
+                            .h_full()
+                            .border_l_1()
+                            .border_color(tokens.colors().border_subtle)
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(left))
+                            .top(px(3.))
+                            .h(px(16.))
+                            .w(px(width))
+                            .rounded(px(tokens.radius.control()))
+                            .border_1()
+                            .border_color(tokens.colors().accent)
+                            .bg(tokens.colors().row_active()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A saved roadmap view over date and iteration values.
+    fn project_roadmap_view(
+        &mut self,
+        board: &e1_github::ProjectBoard,
+        view: &ProjectView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const LABEL_WIDTH: f32 = 210.;
+        const TRACK_WIDTH: f32 = 620.;
+        let tokens = Tokens::global(cx).clone();
+        let Some(roadmap) = roadmap(board, view) else {
+            return self.notice(
+                rust_i18n::t!("project.roadmap.no_dates").to_string(),
+                false,
+                cx,
+            );
+        };
+        let count = roadmap.rows.len();
+        let rows = roadmap.rows;
+        let start = roadmap.start;
+        let end = roadmap.end;
+        let project_id = board.project.id.clone();
+        let this = cx.entity();
+        v_flex()
+            .size_full()
+            .min_w(px(LABEL_WIDTH + TRACK_WIDTH + 32.))
+            .child(
+                h_flex()
+                    .h(px(34.))
+                    .flex_shrink_0()
+                    .px_4()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(tokens.colors().border_subtle)
+                    .child(div().w(px(LABEL_WIDTH)))
+                    .child(
+                        h_flex()
+                            .w(px(TRACK_WIDTH))
+                            .justify_between()
+                            .text_size(px(10.5))
+                            .text_color(tokens.colors().text_muted)
+                            .child(start.to_string())
+                            .child(end.to_string()),
+                    ),
+            )
+            .child(
+                uniform_list("project-roadmap", count, move |range, _window, cx| {
+                    this.update(cx, |this, cx| {
+                        range
+                            .map(|index| {
+                                this.project_roadmap_row(&project_id, &rows[index], start, end, cx)
+                            })
+                            .collect()
+                    })
+                })
+                .flex_1()
+                .min_h_0()
+                .w_full(),
+            )
+            .into_any_element()
+    }
+
+    /// A Project's metadata and every item in its default project order.
+    fn project(&mut self, project: Project, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = Tokens::global(cx).clone();
+        let fetch = self.store.read(cx).project_board(&project.id).cloned();
+        let loading = fetch.as_ref().is_some_and(|fetch| fetch.is_loading());
+        let error = fetch
+            .as_ref()
+            .and_then(|fetch| fetch.error())
+            .map(str::to_string);
+        let board = fetch.as_ref().and_then(|fetch| fetch.value()).cloned();
+        let count = board.as_ref().map(|board| board.items.len());
+        let project_action = self.store.read(cx).project_action(&project.id).cloned();
+        let selected_view = board.as_ref().and_then(|board| {
+            self.project_view
+                .as_deref()
+                .and_then(|id| board.views.iter().find(|view| view.id == id))
+                .or_else(|| board.views.first())
+                .cloned()
+        });
+        let visible_count = board
+            .as_ref()
+            .zip(selected_view.as_ref())
+            .map(|(board, view)| visible_item_indices(board, view).len())
+            .or(count);
+        let view_chips = board.as_ref().and_then(|board| {
+            (!board.views.is_empty()).then(|| {
+                let selected_id = selected_view.as_ref().map(|view| view.id.as_str());
+                h_flex()
+                    .w_full()
+                    .gap_0p5()
+                    .overflow_x_scrollbar()
+                    .children(board.views.iter().map(|view| {
+                        let selected = selected_id == Some(view.id.as_str());
+                        let id = view.id.clone();
+                        div()
+                            .id(("project-view", view.number as usize))
+                            .flex_shrink_0()
+                            .px_3()
+                            .py_2()
+                            .border_b_2()
+                            .border_color(if selected {
+                                tokens.colors().accent
+                            } else {
+                                transparent_black()
+                            })
+                            .cursor_pointer()
+                            .text_size(px(11.5))
+                            .when(selected, |this| {
+                                this.text_color(tokens.colors().text_primary)
+                                    .font_semibold()
+                            })
+                            .when(!selected, |this| {
+                                this.text_color(tokens.colors().text_muted)
+                            })
+                            .hover(|this| this.bg(tokens.colors().row_hover()))
+                            .child(view.name.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.project_view = Some(id.clone());
+                                cx.notify();
+                            }))
+                    }))
+                    .into_any_element()
+            })
+        });
+        let filter_bar = selected_view.as_ref().map(|view| {
+            h_flex()
+                .w_full()
+                .h(px(34.))
+                .px_3()
+                .gap_2()
+                .rounded(px(tokens.radius.control()))
+                .border_1()
+                .border_color(tokens.colors().border_subtle)
+                .bg(tokens.colors().bg_surface)
+                .text_size(px(11.5))
+                .text_color(tokens.colors().text_secondary)
+                .child(
+                    Icon::new(IconName::Search)
+                        .size_3()
+                        .text_color(tokens.colors().text_muted),
+                )
+                .child(
+                    view.filter
+                        .clone()
+                        .unwrap_or_else(|| rust_i18n::t!("project.filter.empty").to_string()),
+                )
+                .child(
+                    div()
+                        .ml_auto()
+                        .px_1p5()
+                        .rounded_full()
+                        .bg(tokens.colors().row_hover())
+                        .text_color(tokens.colors().text_muted)
+                        .child(visible_count.unwrap_or_default().to_string()),
+                )
+        });
+        let head = v_flex()
+            .w_full()
+            .px_5()
+            .py_4()
+            .gap_2()
+            .border_b_1()
+            .border_color(tokens.colors().border_subtle)
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_semibold()
+                    .text_color(tokens.colors().text_primary)
+                    .child(project.title.clone()),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_size(px(11.5))
+                    .text_color(tokens.colors().text_muted)
+                    .child(project.owner.clone())
+                    .child(format!("#{}", project.number))
+                    .children(
+                        count
+                            .map(|count| rust_i18n::t!("project.items", count = count).to_string()),
+                    )
+                    .when(loading && count.is_some(), |this| {
+                        this.child(spinner(px(12.), tokens.colors().text_muted))
+                    }),
+            )
+            .children(view_chips)
+            .children(filter_bar)
+            .children(project_action.as_ref().and_then(|action| {
+                action.error().map(|error| {
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(tokens.colors().status_error)
+                        .child(error.to_string())
+                })
+            }));
+        let body: AnyElement = match (count, error, loading) {
+            (Some(0), _, _) => {
+                self.notice(rust_i18n::t!("project.items.empty").to_string(), false, cx)
+            }
+            (Some(count), _, _) => match (board.as_ref(), selected_view.as_ref()) {
+                (Some(board), Some(view)) if view.layout == ProjectViewLayout::Board => {
+                    self.project_board_view(board, view, cx)
+                }
+                (Some(board), Some(view)) if view.layout == ProjectViewLayout::Roadmap => div()
+                    .size_full()
+                    .overflow_x_scrollbar()
+                    .child(self.project_roadmap_view(board, view, cx))
+                    .into_any_element(),
+                _ => {
+                    let id = project.id.clone();
+                    let indices = board
+                        .as_ref()
+                        .zip(selected_view.as_ref())
+                        .map(|(board, view)| visible_item_indices(board, view))
+                        .unwrap_or_else(|| (0..count).collect());
+                    let row_count = indices.len();
+                    let this = cx.entity();
+                    uniform_list("project-items", row_count, move |range, _window, cx| {
+                        this.update(cx, |this, cx| {
+                            range
+                                .map(|index| this.project_item_row(&id, indices[index], cx))
+                                .collect()
+                        })
+                    })
+                    .flex_1()
+                    .size_full()
+                    .into_any_element()
+                }
+            },
+            (None, Some(error), _) => self.notice(error, true, cx),
+            (None, None, true) => crate::skeleton::list_rows(7, cx),
+            (None, None, false) => {
+                self.notice(rust_i18n::t!("project.items.empty").to_string(), false, cx)
+            }
+        };
+        v_flex()
+            .size_full()
+            .child(head)
+            .child(body)
             .into_any_element()
     }
 
@@ -3839,6 +4685,10 @@ impl Render for Detail {
             Some(Showing::Commit { repo, sha }) => (
                 self.commit(repo, sha.clone(), cx),
                 SharedString::from(format!("detail-commit:{sha}")).into(),
+            ),
+            Some(Showing::Project(project)) => (
+                self.project(project.clone(), cx),
+                SharedString::from(format!("detail-project:{}", project.id)).into(),
             ),
         };
         let body = crate::fade::fade_in(id, body, cx);

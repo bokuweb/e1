@@ -8,7 +8,7 @@
 //! is ignored, and signing out deletes it.
 
 use crate::nav::Focus;
-use e1_github::{Comment, Item, Notification, Pull, Repo, RepoId, Viewer};
+use e1_github::{Comment, Item, Notification, Project, ProjectBoard, Pull, Repo, RepoId, Viewer};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -40,14 +40,21 @@ pub struct Snapshot {
     pub lists: Vec<(Focus, Vec<Item>)>,
     /// The items that had been read, most recent last.
     pub details: Vec<((RepoId, u64), ItemDetail)>,
+    /// Every Project visible to the viewer.
+    pub projects: Vec<Project>,
+    /// Recently opened Projects, least recent first.
+    pub project_boards: Vec<ProjectBoard>,
 }
 
 /// The shape this build writes.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// How many read items are kept. The recent ones are what a reader comes
 /// back to; the rest are one request away.
 pub const DETAILS_KEPT: usize = 40;
+
+/// How many complete Project boards are kept between launches.
+pub const PROJECTS_KEPT: usize = 5;
 
 impl Snapshot {
     /// An empty snapshot of this build's version.
@@ -62,6 +69,8 @@ impl Snapshot {
     pub fn trim(&mut self) {
         let excess = self.details.len().saturating_sub(DETAILS_KEPT);
         self.details.drain(..excess);
+        let excess = self.project_boards.len().saturating_sub(PROJECTS_KEPT);
+        self.project_boards.drain(..excess);
     }
 }
 
@@ -156,5 +165,23 @@ mod tests {
         snapshot.trim();
         assert_eq!(snapshot.details.len(), DETAILS_KEPT);
         assert_eq!(snapshot.details[0].0.1, 5, "the oldest go first");
+    }
+
+    #[test]
+    fn only_the_recent_projects_are_kept() {
+        let source = e1_github::Scripted::sample();
+        let project = source.projects("bokuweb").unwrap().remove(0);
+        let board = source.project(&project).unwrap();
+        let mut snapshot = Snapshot::new();
+        for index in 0..(PROJECTS_KEPT + 2) {
+            let mut board = board.clone();
+            board.project.id = format!("project-{index}");
+            snapshot.project_boards.push(board);
+        }
+
+        snapshot.trim();
+
+        assert_eq!(snapshot.project_boards.len(), PROJECTS_KEPT);
+        assert_eq!(snapshot.project_boards[0].project.id, "project-2");
     }
 }
