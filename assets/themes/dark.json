@@ -27,7 +27,7 @@
   },
   "duration_ms": {
     "quick": 120,
-    "fade": 200,
+    "fade": 320,
     "standard": 260
   }
 }
