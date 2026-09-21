@@ -7,7 +7,7 @@
 use crate::avatar::avatar;
 use crate::store::{ItemKey, Store, StoreEvent};
 use chrono::Utc;
-use e1_github::CheckState;
+use e1_github::{CheckState, Project};
 use e1_ui::assets::icon;
 use e1_ui::rows::{Glyph, ItemRow};
 use e1_ui::{Focus, Section, Tokens};
@@ -29,6 +29,8 @@ pub enum ItemEvent {
         /// round trip.
         is_pull: bool,
     },
+    /// Open a Project in the native detail panel.
+    OpenProject(Project),
     /// Open something on the web, because it has no detail here.
     OpenUrl(String),
 }
@@ -40,7 +42,9 @@ pub struct ItemList {
     store: Entity<Store>,
     focus: Option<Focus>,
     rows: Vec<ItemRow>,
+    projects: Vec<Project>,
     selected: Option<ItemKey>,
+    selected_project: Option<String>,
 }
 
 impl ItemList {
@@ -52,7 +56,9 @@ impl ItemList {
             store,
             focus: None,
             rows: Vec::new(),
+            projects: Vec::new(),
             selected: None,
+            selected_project: None,
         }
     }
 
@@ -67,6 +73,7 @@ impl ItemList {
         match &self.focus {
             None => false,
             Some(Focus::Section(Section::Inbox)) => store.inbox().is_loading(),
+            Some(Focus::Section(Section::Projects)) => store.all_projects().is_loading(),
             Some(focus) => store.list(focus).is_some_and(|list| list.is_loading()),
         }
     }
@@ -75,6 +82,7 @@ impl ItemList {
     pub fn set_focus(&mut self, focus: Focus, cx: &mut Context<Self>) {
         if self.focus.as_ref() != Some(&focus) {
             self.selected = None;
+            self.selected_project = None;
         }
         self.focus = Some(focus.clone());
         self.store
@@ -95,6 +103,11 @@ impl ItemList {
         let now = Utc::now();
         let muted = Tokens::global(cx).colors().text_muted;
         let store = self.store.read(cx);
+        self.projects = if self.focus == Some(Focus::Section(Section::Projects)) {
+            store.all_projects().value().cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.rows = match &self.focus {
             None => Vec::new(),
             Some(Focus::Section(Section::Inbox)) => store
@@ -111,6 +124,11 @@ impl ItemList {
                         })
                         .collect()
                 })
+                .unwrap_or_default(),
+            Some(Focus::Section(Section::Projects)) => store
+                .all_projects()
+                .value()
+                .map(|projects| projects.iter().map(ItemRow::from_project).collect())
                 .unwrap_or_default(),
             Some(focus) => store
                 .list(focus)
@@ -141,6 +159,13 @@ impl ItemList {
 
     /// The reader picked a row.
     fn open(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(project) = self.projects.get(index).cloned() {
+            self.selected_project = Some(project.id.clone());
+            self.selected = None;
+            cx.emit(ItemEvent::OpenProject(project));
+            cx.notify();
+            return;
+        }
         let Some(row) = self.rows.get(index) else {
             return;
         };
@@ -168,7 +193,11 @@ impl ItemList {
         let Some(row) = self.rows.get(index) else {
             return div().h(ROW_HEIGHT).into_any_element();
         };
-        let selected = row.key.is_some() && self.selected == row.key;
+        let selected = (row.key.is_some() && self.selected == row.key)
+            || self
+                .projects
+                .get(index)
+                .is_some_and(|project| Some(&project.id) == self.selected_project.as_ref());
         let glyph_color = row.glyph.role().color(tokens.colors());
         let picture = row
             .avatar_url
@@ -361,6 +390,9 @@ impl Render for ItemList {
             match &self.focus {
                 None => None,
                 Some(Focus::Section(Section::Inbox)) => store.inbox().error().map(str::to_string),
+                Some(Focus::Section(Section::Projects)) => {
+                    store.all_projects().error().map(str::to_string)
+                }
                 Some(focus) => store
                     .list(focus)
                     .and_then(|list| list.error())
@@ -375,7 +407,16 @@ impl Render for ItemList {
             match error {
                 Some(error) => self.notice(error, true, cx),
                 None if loading => crate::skeleton::list_rows(8, cx),
-                None => self.notice(rust_i18n::t!("list.empty").to_string(), false, cx),
+                None => self.notice(
+                    rust_i18n::t!(if self.focus == Some(Focus::Section(Section::Projects)) {
+                        "list.projects.empty"
+                    } else {
+                        "list.empty"
+                    })
+                    .to_string(),
+                    false,
+                    cx,
+                ),
             }
         } else {
             let this = cx.entity();

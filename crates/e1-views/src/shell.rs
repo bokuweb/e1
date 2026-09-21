@@ -270,6 +270,13 @@ impl Shell {
                     this.toggle(Panel::RightPanel, cx);
                 }
             }
+            ItemEvent::OpenProject(project) => {
+                this.detail
+                    .update(cx, |detail, cx| detail.show_project(project.clone(), cx));
+                if !this.layout.is_open(Panel::RightPanel) {
+                    this.toggle(Panel::RightPanel, cx);
+                }
+            }
             ItemEvent::OpenUrl(url) => cx.open_url(url),
         }));
         // The headers show what the store knows (a title, a spinner), so a

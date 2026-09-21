@@ -14,8 +14,8 @@
 
 use e1_github::{
     CheckState, Checks, Commit, CommitDetail, FileContent, GitHub, Item, Job, Label, ListKind,
-    MergeMethod, Notification, Project, ProjectMembership, PullFile, Repo, RepoId, ReviewComment,
-    ReviewEvent, Side, Tree, User, Viewer,
+    MergeMethod, Notification, Project, ProjectBoard, ProjectFieldValue, ProjectMembership,
+    ProjectValue, PullFile, Repo, RepoId, ReviewComment, ReviewEvent, Side, Tree, User, Viewer,
 };
 use e1_ui::fetch::describe;
 use e1_ui::snapshot::{self, ItemDetail, Snapshot};
@@ -68,6 +68,20 @@ pub struct Store {
     candidates: HashMap<RepoId, Fetch<Vec<User>>>,
     /// Each owner's projects, for the picker.
     projects: HashMap<String, Fetch<Vec<Project>>>,
+    /// Every project visible to the viewer, for the fixed sidebar section.
+    all_projects: Fetch<Vec<Project>>,
+    /// Project contents, by the project's global id.
+    project_boards: HashMap<String, Fetch<ProjectBoard>>,
+    /// Complete Projects in least-recently-opened order for the snapshot.
+    opened_projects: Vec<String>,
+    /// The last complete Project answers. Pagination may replace the visible
+    /// value with a partial board, but the disk cache must never do so.
+    project_cache: HashMap<String, ProjectBoard>,
+    /// The current paginated load generation for each Project. A refresh
+    /// supersedes callbacks still arriving from its previous cursor chain.
+    project_loads: HashMap<String, u64>,
+    /// The last drag between Project columns, by project id.
+    project_actions: HashMap<String, Fetch<()>>,
     /// Which projects each item is in.
     memberships: HashMap<ItemKey, Fetch<Vec<ProjectMembership>>>,
     /// The checks on each commit, by repository and sha.
@@ -125,6 +139,12 @@ impl Store {
             repo_labels: HashMap::new(),
             candidates: HashMap::new(),
             projects: HashMap::new(),
+            all_projects: Fetch::Idle,
+            project_boards: HashMap::new(),
+            opened_projects: Vec::new(),
+            project_cache: HashMap::new(),
+            project_loads: HashMap::new(),
+            project_actions: HashMap::new(),
             memberships: HashMap::new(),
             checks: HashMap::new(),
             review_comments: HashMap::new(),
@@ -537,18 +557,234 @@ impl Store {
         self.projects.get(owner)
     }
 
+    /// Every project visible to the signed-in viewer.
+    pub fn all_projects(&self) -> &Fetch<Vec<Project>> {
+        &self.all_projects
+    }
+
+    /// Fetch every personal and organisation project the viewer can reach.
+    pub fn load_all_projects(&mut self, cx: &mut Context<Self>) {
+        self.all_projects.begin();
+        self.fetch(
+            cx,
+            |github| github.all_projects(),
+            |this, result, _| this.all_projects.finish(result),
+        );
+    }
+
+    /// One project's contents, if they have ever been asked for.
+    pub fn project_board(&self, id: &str) -> Option<&Fetch<ProjectBoard>> {
+        self.project_boards.get(id)
+    }
+
+    /// Fetch one project's contents.
+    pub fn load_project(&mut self, project: Project, cx: &mut Context<Self>) {
+        self.opened_projects.retain(|id| id != &project.id);
+        self.opened_projects.push(project.id.clone());
+        let generation = {
+            let generation = self.project_loads.entry(project.id.clone()).or_default();
+            *generation = generation.wrapping_add(1);
+            *generation
+        };
+        if self.project_cache.contains_key(&project.id) {
+            let id = project.id.clone();
+            self.project_boards.entry(id.clone()).or_default().begin();
+            self.fetch_transient(
+                cx,
+                {
+                    let project = project.clone();
+                    move |github| github.project(&project)
+                },
+                move |this, result, cx| {
+                    if this.project_loads.get(&id) != Some(&generation) {
+                        return;
+                    }
+                    if let Ok(board) = &result {
+                        this.project_cache.insert(id.clone(), board.clone());
+                    }
+                    this.project_boards.entry(id).or_default().finish(result);
+                    this.persist(cx);
+                },
+            );
+        } else {
+            self.load_project_page(project, None, true, generation, cx);
+        }
+    }
+
+    /// Fetch one Project page, publish it immediately, then continue with the
+    /// following cursor. This keeps a large board usable while the rest lands.
+    fn load_project_page(
+        &mut self,
+        project: Project,
+        after: Option<String>,
+        replace: bool,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let id = project.id.clone();
+        self.project_boards.entry(id.clone()).or_default().begin();
+        self.fetch_transient(
+            cx,
+            {
+                let project = project.clone();
+                let after = after.clone();
+                move |github| github.project_page(&project, after.as_deref())
+            },
+            move |this, result, cx| match result {
+                Ok(page) => {
+                    if this.project_loads.get(&id) != Some(&generation) {
+                        return;
+                    }
+                    let next = page.next_cursor.clone();
+                    let board = if replace {
+                        page.board
+                    } else {
+                        let mut board = this
+                            .project_boards
+                            .get(&id)
+                            .and_then(Fetch::value)
+                            .cloned()
+                            .unwrap_or_else(|| ProjectBoard {
+                                project: project.clone(),
+                                items: Vec::new(),
+                                fields: Vec::new(),
+                                views: Vec::new(),
+                            });
+                        e1_ui::project::append_page(&mut board, page);
+                        board
+                    };
+                    this.project_boards
+                        .entry(id.clone())
+                        .or_default()
+                        .finish(Ok(board));
+                    if let Some(next) = next {
+                        this.load_project_page(project, Some(next), false, generation, cx);
+                    } else {
+                        if let Some(board) =
+                            this.project_boards.get(&id).and_then(Fetch::value).cloned()
+                        {
+                            this.project_cache.insert(id.clone(), board);
+                        }
+                        this.persist(cx);
+                    }
+                }
+                Err(error) => {
+                    if this.project_loads.get(&id) != Some(&generation) {
+                        return;
+                    }
+                    this.project_boards
+                        .entry(id)
+                        .or_default()
+                        .finish(Err(error));
+                }
+            },
+        );
+    }
+
+    /// Fetch one project's contents only if it has not been read yet.
+    pub fn ensure_project(&mut self, project: Project, cx: &mut Context<Self>) {
+        if !self.project_loads.contains_key(&project.id)
+            || self
+                .project_boards
+                .get(&project.id)
+                .is_none_or(Fetch::is_idle)
+        {
+            self.load_project(project, cx);
+        }
+    }
+
+    /// The last field update made by dragging a Project card.
+    pub fn project_action(&self, project_id: &str) -> Option<&Fetch<()>> {
+        self.project_actions.get(project_id)
+    }
+
+    /// Move a Project card to a single-select column, optimistically, then
+    /// reconcile it with GitHub's answer.
+    pub fn move_project_item(
+        &mut self,
+        project: Project,
+        item_id: String,
+        field_id: String,
+        option: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(fetch) = self.project_boards.get_mut(&project.id)
+            && let Some(mut board) = fetch.value().cloned()
+            && let Some(item) = board.items.iter_mut().find(|item| item.id == item_id)
+        {
+            item.fields.retain(|value| value.field_id != field_id);
+            if let Some((_, name)) = option.as_ref() {
+                let field_name = board
+                    .fields
+                    .iter()
+                    .find(|field| field.id == field_id)
+                    .map(|field| field.name.clone())
+                    .unwrap_or_default();
+                item.fields.push(ProjectFieldValue {
+                    field_id: field_id.clone(),
+                    field_name: field_name.clone(),
+                    value: ProjectValue::SingleSelect(name.clone()),
+                });
+                if field_name.eq_ignore_ascii_case("status") {
+                    item.status = Some(name.clone());
+                }
+            } else if board
+                .fields
+                .iter()
+                .find(|field| field.id == field_id)
+                .is_some_and(|field| field.name.eq_ignore_ascii_case("status"))
+            {
+                item.status = None;
+            }
+            *fetch = Fetch::Ready(board);
+            if let Some(board) = fetch.value().cloned() {
+                self.project_cache.insert(project.id.clone(), board);
+            }
+        }
+        self.project_actions
+            .entry(project.id.clone())
+            .or_default()
+            .begin();
+        let option_id = option.map(|(id, _)| id);
+        let project_id = project.id.clone();
+        self.fetch(
+            cx,
+            move |github| {
+                github.set_project_single_select(
+                    &project_id,
+                    &item_id,
+                    &field_id,
+                    option_id.as_deref(),
+                )
+            },
+            move |this, result, cx| {
+                this.project_actions
+                    .entry(project.id.clone())
+                    .or_default()
+                    .finish(result);
+                this.load_project(project, cx);
+            },
+        );
+    }
+
+    /// Fetch an owner's projects, keeping a stale answer on screen while
+    /// GitHub revalidates it.
+    pub fn load_projects(&mut self, owner: String, cx: &mut Context<Self>) {
+        self.projects.entry(owner.clone()).or_default().begin();
+        let key = owner.clone();
+        self.fetch(
+            cx,
+            move |github| github.projects(&owner),
+            move |this, result, _| {
+                this.projects.entry(key).or_default().finish(result);
+            },
+        );
+    }
+
     /// Fetch an owner's projects only if they never have been.
     pub fn ensure_projects(&mut self, owner: String, cx: &mut Context<Self>) {
         if self.projects.get(&owner).is_none_or(Fetch::is_idle) {
-            self.projects.entry(owner.clone()).or_default().begin();
-            let key = owner.clone();
-            self.fetch(
-                cx,
-                move |github| github.projects(&owner),
-                move |this, result, _| {
-                    this.projects.entry(key).or_default().finish(result);
-                },
-            );
+            self.load_projects(owner, cx);
         }
     }
 
@@ -823,12 +1059,21 @@ impl Store {
             self.repos = Fetch::Ready(snapshot.repos);
         }
         self.inbox = Fetch::Ready(snapshot.inbox);
+        if !snapshot.projects.is_empty() {
+            self.all_projects = Fetch::Ready(snapshot.projects);
+        }
         for (focus, items) in snapshot.lists {
             self.lists.insert(focus, Fetch::Ready(items));
         }
         for (key, detail) in snapshot.details {
             self.opened.push(key.clone());
             self.details.insert(key, Fetch::Ready(detail));
+        }
+        for board in snapshot.project_boards {
+            let id = board.project.id.clone();
+            self.opened_projects.push(id.clone());
+            self.project_cache.insert(id.clone(), board.clone());
+            self.project_boards.insert(id, Fetch::Ready(board));
         }
     }
 
@@ -852,6 +1097,12 @@ impl Store {
                     .and_then(Fetch::value)
                     .map(|detail| (key.clone(), detail.clone()))
             })
+            .collect();
+        snapshot.projects = self.all_projects.value().cloned().unwrap_or_default();
+        snapshot.project_boards = self
+            .opened_projects
+            .iter()
+            .filter_map(|id| self.project_cache.get(id).cloned())
             .collect();
         snapshot.trim();
         snapshot
@@ -922,6 +1173,13 @@ impl Store {
         self.repos = Fetch::Idle;
         self.inbox = Fetch::Idle;
         self.lists.clear();
+        self.projects.clear();
+        self.all_projects = Fetch::Idle;
+        self.project_boards.clear();
+        self.opened_projects.clear();
+        self.project_cache.clear();
+        self.project_loads.clear();
+        self.project_actions.clear();
         self.details.clear();
         self.opened.clear();
         self.pull_files.clear();
@@ -945,6 +1203,7 @@ impl Store {
         self.load_viewer(cx);
         self.load_repos(cx);
         self.load_inbox(cx);
+        self.load_all_projects(cx);
     }
 
     /// Fetch the viewer.
@@ -1002,6 +1261,10 @@ impl Store {
         if focus == Focus::Section(Section::Inbox) {
             return self.load_inbox(cx);
         }
+        if focus == Focus::Section(Section::Projects) {
+            self.load_all_projects(cx);
+            return;
+        }
         if !focus.is_list() {
             return;
         }
@@ -1010,6 +1273,7 @@ impl Store {
         self.fetch(
             cx,
             move |github| match &focus {
+                Focus::Section(Section::Projects) => Ok(Vec::new()),
                 Focus::Section(section) => github.search(section.query().unwrap_or_default()),
                 Focus::Search { query } => github.search(query),
                 Focus::Repo { repo, kind, status } => github.items(repo, *kind, *status),
@@ -1038,6 +1302,7 @@ impl Store {
     pub fn ensure_list(&mut self, focus: Focus, cx: &mut Context<Self>) {
         let idle = match &focus {
             Focus::Section(Section::Inbox) => self.inbox.is_idle(),
+            Focus::Section(Section::Projects) => self.all_projects.is_idle(),
             other => self.lists.get(other).is_none_or(Fetch::is_idle),
         };
         if idle {
@@ -1173,6 +1438,26 @@ impl Store {
         W: FnOnce(&dyn GitHub) -> e1_github::Result<T> + Send + 'static,
         A: FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
     {
+        self.fetch_inner(cx, true, work, apply);
+    }
+
+    /// Run a request whose intermediate answer must not rewrite the disk
+    /// snapshot. A paginated Project persists once, after its final page.
+    fn fetch_transient<T, W, A>(&self, cx: &mut Context<Self>, work: W, apply: A)
+    where
+        T: Send + 'static,
+        W: FnOnce(&dyn GitHub) -> e1_github::Result<T> + Send + 'static,
+        A: FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+    {
+        self.fetch_inner(cx, false, work, apply);
+    }
+
+    fn fetch_inner<T, W, A>(&self, cx: &mut Context<Self>, persist: bool, work: W, apply: A)
+    where
+        T: Send + 'static,
+        W: FnOnce(&dyn GitHub) -> e1_github::Result<T> + Send + 'static,
+        A: FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+    {
         cx.notify();
         let github = self.github.clone();
         cx.spawn(async move |this, cx| {
@@ -1188,7 +1473,9 @@ impl Store {
                 apply(this, result, cx);
                 cx.emit(StoreEvent::Changed);
                 cx.notify();
-                this.persist(cx);
+                if persist {
+                    this.persist(cx);
+                }
             })
             .ok();
         })

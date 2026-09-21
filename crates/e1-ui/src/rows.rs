@@ -7,7 +7,7 @@
 use crate::theme::{Colors, ThemeAppearance, parse_hex};
 use crate::time::age;
 use chrono::{DateTime, Utc};
-use e1_github::{CheckState, Item, Notification, RepoId, State, SubjectKind};
+use e1_github::{CheckState, Item, Notification, Project, RepoId, State, SubjectKind};
 use gpui::{Hsla, SharedString};
 
 /// The mark a row leads with, which is its state.
@@ -31,6 +31,8 @@ pub enum Glyph {
     IssueClosed,
     /// An inbox row about something that is not a pull or an issue.
     Bell,
+    /// A GitHub Project.
+    Project,
 }
 
 /// Which token a glyph is painted with.
@@ -91,6 +93,7 @@ impl Glyph {
             Self::IssueOpen => icon::CIRCLE_DOT,
             Self::IssueClosed => icon::CIRCLE_CHECK,
             Self::Bell => icon::BELL,
+            Self::Project => icon::PROJECT,
         }
     }
 
@@ -98,7 +101,7 @@ impl Glyph {
     pub fn role(self) -> Role {
         match self {
             Self::PullOpen | Self::IssueOpen => Role::Open,
-            Self::PullDraft | Self::Bell => Role::Muted,
+            Self::PullDraft | Self::Bell | Self::Project => Role::Muted,
             Self::PullMerged | Self::IssueClosed => Role::Accent,
             Self::PullClosed => Role::Error,
         }
@@ -107,7 +110,7 @@ impl Glyph {
     /// The locale key for the state's word, for the detail header.
     pub fn label_key(self) -> &'static str {
         match self {
-            Self::PullOpen | Self::IssueOpen | Self::Bell => "state.open",
+            Self::PullOpen | Self::IssueOpen | Self::Bell | Self::Project => "state.open",
             Self::PullDraft => "state.draft",
             Self::PullMerged => "state.merged",
             Self::PullClosed | Self::IssueClosed => "state.closed",
@@ -196,6 +199,31 @@ pub struct ItemRow {
 const LABELS_PER_ROW: usize = 3;
 
 impl ItemRow {
+    /// A row for a GitHub Project. It has no native item detail yet, so
+    /// opening it follows the project's own GitHub URL.
+    pub fn from_project(project: &Project) -> Self {
+        Self {
+            key: None,
+            glyph: Glyph::Project,
+            title: project.title.clone().into(),
+            number: format!("#{}", project.number).into(),
+            repo: project.owner.clone().into(),
+            meta: rust_i18n::t!(if project.closed {
+                "state.closed"
+            } else {
+                "state.open"
+            })
+            .to_string()
+            .into(),
+            comments: None,
+            labels: Vec::new(),
+            unread: false,
+            html_url: Some(project.html_url.clone()),
+            avatar_url: None,
+            check: None,
+        }
+    }
+
     /// A row for a pull or an issue.
     pub fn from_item(item: &Item, now: DateTime<Utc>, muted: Hsla) -> Self {
         Self {
@@ -338,6 +366,26 @@ mod tests {
         item.comments = Some(0);
         let row = ItemRow::from_item(&item, Utc::now(), gpui::black());
         assert_eq!(row.comments, None);
+    }
+
+    #[test]
+    fn a_project_row_keeps_its_owner_state_and_web_destination() {
+        rust_i18n::set_locale("en");
+        let project = Project {
+            id: "PVT_1".into(),
+            owner: "bokuweb".into(),
+            title: "Roadmap".into(),
+            number: 3,
+            closed: true,
+            html_url: "https://github.com/users/bokuweb/projects/3".into(),
+        };
+        let row = ItemRow::from_project(&project);
+        assert_eq!(row.glyph, Glyph::Project);
+        assert_eq!(row.repo.as_ref(), "bokuweb");
+        assert_eq!(row.number.as_ref(), "#3");
+        assert_eq!(row.meta.as_ref(), "Closed");
+        assert_eq!(row.html_url.as_deref(), Some(project.html_url.as_str()));
+        assert_eq!(row.key, None, "projects open on the web, not as items");
     }
 
     #[test]

@@ -34,6 +34,9 @@ sidebar.reviews:
 sidebar.assigned:
   en: Assigned
   ja: 担当のIssue
+sidebar.projects:
+  en: Projects
+  ja: Projects
 sidebar.repositories:
   en: Repositories
   ja: リポジトリ
@@ -68,6 +71,33 @@ list.comments:
 list.refresh:
   en: Refresh
   ja: 更新
+list.projects.empty:
+  en: No projects yet
+  ja: Project はありません
+project.items:
+  en: "%{count} items"
+  ja: "%{count} 件"
+project.items.empty:
+  en: This project has no items
+  ja: この Project に項目はありません
+project.item.draft:
+  en: Draft issue
+  ja: Draft Issue
+project.item.unavailable:
+  en: Unavailable item
+  ja: 閲覧できない項目
+project.item.no_status:
+  en: No status
+  ja: ステータスなし
+project.roadmap.no_dates:
+  en: This roadmap has no date or iteration values to place yet
+  ja: この Roadmap には表示できる日付または Iteration がありません
+project.filter.empty:
+  en: Filter by keyword or field
+  ja: キーワードまたはフィールドで絞り込み
+project.back:
+  en: Back to %{project}
+  ja: "%{project} に戻る"
 
 inbox.reason.review_requested:
   en: review requested
@@ -247,7 +277,6 @@ file.lines:
 search.title:
   en: Search
   ja: 検索
-
 palette.placeholder:
   en: Jump to a repository, or search GitHub…
   ja: リポジトリへ移動、または GitHub を検索…

@@ -39,6 +39,10 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (icon::LOCK, include_str!("../../../assets/icons/lock.svg")),
     (
+        icon::PROJECT,
+        include_str!("../../../assets/icons/project.svg"),
+    ),
+    (
         icon::USER_CHECK,
         include_str!("../../../assets/icons/user-check.svg"),
     ),
@@ -61,6 +65,8 @@ pub mod icon {
     pub const MESSAGE: &str = "icons/message-square.svg";
     /// A private repository.
     pub const LOCK: &str = "icons/lock.svg";
+    /// A GitHub Project.
+    pub const PROJECT: &str = "icons/project.svg";
     /// Assigned to you.
     pub const USER_CHECK: &str = "icons/user-check.svg";
     /// The app's own mark: an `E` and a `1`, painted in [`crate::Tokens::logo`].
@@ -112,6 +118,7 @@ mod tests {
             icon::CIRCLE_DOT,
             icon::MESSAGE,
             icon::LOCK,
+            icon::PROJECT,
             icon::USER_CHECK,
             icon::E1,
         ] {

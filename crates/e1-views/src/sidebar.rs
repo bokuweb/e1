@@ -188,6 +188,13 @@ impl Sidebar {
                 .value()
                 .map(|inbox| inbox.iter().filter(|n| n.unread).count())
                 .filter(|count| *count > 0),
+            Section::Projects => self
+                .store
+                .read(cx)
+                .all_projects()
+                .value()
+                .map(Vec::len)
+                .filter(|count| *count > 0),
             other => self
                 .store
                 .read(cx)

@@ -426,12 +426,177 @@ impl MergeMethod {
 pub struct Project {
     /// The project's global id, which adding an item takes.
     pub id: String,
+    /// The user or organisation that owns it.
+    pub owner: String,
     /// Its title.
     pub title: String,
     /// Its number within the owner.
     pub number: u64,
     /// Whether it is closed.
     pub closed: bool,
+    /// Where the project lives on GitHub.
+    pub html_url: String,
+}
+
+/// The kind of content a Projects v2 item holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectItemKind {
+    /// A project-only draft issue.
+    DraftIssue,
+    /// A repository issue.
+    Issue,
+    /// A repository pull request.
+    PullRequest,
+    /// Content the token is not allowed to read any more.
+    Redacted,
+}
+
+/// One card or row inside a GitHub Project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectItem {
+    /// The item's id within the project.
+    pub id: String,
+    /// Its visible title.
+    pub title: String,
+    /// What kind of content it points at.
+    pub kind: ProjectItemKind,
+    /// The repository, for issues and pull requests.
+    pub repo: Option<RepoId>,
+    /// The issue or pull request number.
+    pub number: Option<u64>,
+    /// GitHub's open/closed state, when the content has one.
+    pub state: Option<String>,
+    /// The selected value of the field named `Status`, when one is set.
+    pub status: Option<String>,
+    /// Values of custom fields used by saved board and roadmap views.
+    pub fields: Vec<ProjectFieldValue>,
+    /// Where the content lives on GitHub, when it has a page.
+    pub html_url: Option<String>,
+    /// Whether the project item is archived.
+    pub archived: bool,
+}
+
+impl ProjectItem {
+    /// The native item detail this project row can open.
+    pub fn item_key(&self) -> Option<(RepoId, u64)> {
+        Some((self.repo.clone()?, self.number?))
+    }
+}
+
+/// The layout GitHub saved for a Project view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectViewLayout {
+    /// Rows and fields.
+    Table,
+    /// Cards arranged into columns.
+    Board,
+    /// Items placed on a date axis.
+    Roadmap,
+}
+
+/// A field that can configure or supply values to a Project view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectField {
+    /// The field's global id.
+    pub id: String,
+    /// Its visible name.
+    pub name: String,
+    /// GitHub's field data type, such as `SINGLE_SELECT` or `DATE`.
+    pub data_type: String,
+    /// Ordered choices for a single-select field.
+    pub options: Vec<ProjectFieldOption>,
+}
+
+/// One configured choice in a Project single-select field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFieldOption {
+    /// The option id required when updating an item.
+    pub id: String,
+    /// Its visible name.
+    pub name: String,
+    /// GitHub's semantic colour name.
+    pub color: String,
+}
+
+/// A value set on one Project item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFieldValue {
+    /// The field's global id.
+    pub field_id: String,
+    /// The field's visible name.
+    pub field_name: String,
+    /// The value in the shape needed by native Project layouts.
+    pub value: ProjectValue,
+}
+
+/// A custom Project field value supported by the native views.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectValue {
+    /// One choice from a configured list.
+    SingleSelect(String),
+    /// A calendar date in ISO 8601 form.
+    Date(String),
+    /// An iteration, including the span it occupies on a roadmap.
+    Iteration {
+        /// Its visible title.
+        title: String,
+        /// Its first day in ISO 8601 form.
+        start_date: String,
+        /// Its length in days.
+        duration: u64,
+    },
+    /// Free-form text.
+    Text(String),
+    /// A numeric value.
+    Number(String),
+    /// One or more names from actor, label, milestone or repository fields.
+    Names(Vec<String>),
+}
+
+/// One saved view of a Project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectView {
+    /// The view's global id.
+    pub id: String,
+    /// Its visible name.
+    pub name: String,
+    /// Its stable number inside the project.
+    pub number: u64,
+    /// How GitHub lays the view out.
+    pub layout: ProjectViewLayout,
+    /// The Project filter expression, when one is configured.
+    pub filter: Option<String>,
+    /// The field used for horizontal groups.
+    pub group_by: Option<String>,
+    /// The field used as board columns.
+    pub vertical_group_by: Option<String>,
+    /// Visible field ids, in their saved order.
+    pub visible_fields: Vec<String>,
+}
+
+/// A Project together with every item in its default ordering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectBoard {
+    /// The project being read.
+    pub project: Project,
+    /// Its items in project position order.
+    pub items: Vec<ProjectItem>,
+    /// Fields and their configured choices.
+    pub fields: Vec<ProjectField>,
+    /// Saved table, board and roadmap views in GitHub order.
+    pub views: Vec<ProjectView>,
+}
+
+/// One page of a Project board.
+///
+/// The first page carries fields and saved views; later pages may leave those
+/// collections empty because callers merge them into the first page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPage {
+    /// The items and any metadata returned on this page.
+    pub board: ProjectBoard,
+    /// GitHub's cursor for the following page, or `None` at the end.
+    pub next_cursor: Option<String>,
 }
 
 /// An item's place in a project.

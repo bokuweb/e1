@@ -41,6 +41,10 @@ const NOTIFICATION_PAGE_SIZE: usize = 50;
 /// to 5,000 notifications or 10,000 rows from the other listings.
 const PAGE_CAP: usize = 100;
 
+/// A Project opens with only what can fill the visible board. Later requests
+/// return to GitHub's maximum page size once there is content to interact with.
+const PROJECT_FIRST_PAGE_SIZE: usize = 25;
+
 /// How long one request may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -666,8 +670,8 @@ impl GitHub for Rest {
         // which without a round trip; asking both in one query is cheaper
         // than asking which.
         let query = r#"query($login: String!) {
-            user(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed } } }
-            organization(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed } } }
+            user(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed url } } }
+            organization(login: $login) { projectsV2(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { id title number closed url } } }
         }"#;
         let data = self.graphql(query, serde_json::json!({ "login": owner }))?;
         let mut projects = Vec::new();
@@ -676,14 +680,368 @@ impl GitHub for Rest {
                 for node in nodes {
                     projects.push(Project {
                         id: node["id"].as_str().unwrap_or_default().to_string(),
+                        owner: owner.to_string(),
                         title: node["title"].as_str().unwrap_or_default().to_string(),
                         number: node["number"].as_u64().unwrap_or_default(),
                         closed: node["closed"].as_bool().unwrap_or(false),
+                        html_url: node["url"].as_str().unwrap_or_default().to_string(),
                     });
                 }
             }
         }
         Ok(projects)
+    }
+
+    fn all_projects(&self) -> Result<Vec<Project>> {
+        // A person's Projects page includes projects owned by them and by
+        // every organisation they belong to. Asking it as one graph avoids
+        // one request per organisation and, unlike deriving owners from the
+        // repository list, does not miss an organisation with no recent repo.
+        let query = r#"query {
+            viewer {
+                login
+                projectsV2(first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                    nodes { id title number closed url }
+                }
+                organizations(first: 100) {
+                    nodes {
+                        login
+                        projectsV2(first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                            nodes { id title number closed url }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let data = self.graphql(query, serde_json::json!({}))?;
+        let viewer = &data["viewer"];
+        let mut projects = Vec::new();
+        let mut append = |owner: &str, nodes: Option<&Vec<serde_json::Value>>| {
+            for node in nodes.into_iter().flatten() {
+                projects.push(Project {
+                    id: node["id"].as_str().unwrap_or_default().to_string(),
+                    owner: owner.to_string(),
+                    title: node["title"].as_str().unwrap_or_default().to_string(),
+                    number: node["number"].as_u64().unwrap_or_default(),
+                    closed: node["closed"].as_bool().unwrap_or(false),
+                    html_url: node["url"].as_str().unwrap_or_default().to_string(),
+                });
+            }
+        };
+        append(
+            viewer["login"].as_str().unwrap_or_default(),
+            viewer["projectsV2"]["nodes"].as_array(),
+        );
+        if let Some(organizations) = viewer["organizations"]["nodes"].as_array() {
+            for organization in organizations {
+                append(
+                    organization["login"].as_str().unwrap_or_default(),
+                    organization["projectsV2"]["nodes"].as_array(),
+                );
+            }
+        }
+        Ok(projects)
+    }
+
+    fn project(&self, project: &Project) -> Result<ProjectBoard> {
+        let mut board = ProjectBoard {
+            project: project.clone(),
+            items: Vec::new(),
+            fields: Vec::new(),
+            views: Vec::new(),
+        };
+        let mut cursor = None;
+        loop {
+            let page = self.project_page(project, cursor.as_deref())?;
+            if board.fields.is_empty() {
+                board.fields = page.board.fields;
+                board.views = page.board.views;
+            }
+            board.items.extend(page.board.items);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(board);
+            }
+        }
+    }
+
+    fn project_page(&self, project: &Project, after: Option<&str>) -> Result<ProjectPage> {
+        let query = r#"query($id: ID!, $after: String, $first: Int!, $includeMetadata: Boolean!) {
+            node(id: $id) {
+                ... on ProjectV2 {
+                    fields(first: 100) @include(if: $includeMetadata) {
+                        nodes {
+                            __typename
+                            ... on ProjectV2FieldCommon { id name dataType }
+                            ... on ProjectV2SingleSelectField { options { id name color } }
+                        }
+                    }
+                    views(first: 100) @include(if: $includeMetadata) {
+                        nodes {
+                            id name number layout filter
+                            fields(first: 100) { nodes { ... on ProjectV2FieldCommon { id } } }
+                            groupByFields(first: 1) { nodes { ... on ProjectV2FieldCommon { id } } }
+                            verticalGroupByFields(first: 1) { nodes { ... on ProjectV2FieldCommon { id } } }
+                        }
+                    }
+                    items(first: $first, after: $after) {
+                        nodes {
+                            id
+                            isArchived
+                            fieldValues(first: 100) {
+                                nodes {
+                                    __typename
+                                    ... on ProjectV2ItemFieldSingleSelectValue {
+                                        name field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldDateValue {
+                                        date field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldIterationValue {
+                                        title startDate duration field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldTextValue {
+                                        text field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldNumberValue {
+                                        number field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldLabelValue {
+                                        labels(first: 10) { nodes { name } }
+                                        field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldMilestoneValue {
+                                        milestone { title }
+                                        field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldUserValue {
+                                        users(first: 10) { nodes { login } }
+                                        field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                    ... on ProjectV2ItemFieldRepositoryValue {
+                                        repository { nameWithOwner }
+                                        field { ... on ProjectV2FieldCommon { id name } }
+                                    }
+                                }
+                            }
+                            content {
+                                __typename
+                                ... on DraftIssue { title }
+                                ... on Issue { title number url state repository { nameWithOwner } }
+                                ... on PullRequest { title number url state repository { nameWithOwner } }
+                            }
+                        }
+                        pageInfo { hasNextPage endCursor }
+                    }
+                }
+            }
+        }"#;
+        let mut items = Vec::new();
+        let data = self.graphql(
+            query,
+            serde_json::json!({
+                "id": project.id,
+                "after": after,
+                "first": if after.is_none() { PROJECT_FIRST_PAGE_SIZE } else { PAGE_SIZE },
+                "includeMetadata": after.is_none(),
+            }),
+        )?;
+        let node = &data["node"];
+        let fields = node["fields"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|field| ProjectField {
+                id: field["id"].as_str().unwrap_or_default().to_string(),
+                name: field["name"].as_str().unwrap_or_default().to_string(),
+                data_type: field["dataType"].as_str().unwrap_or_default().to_string(),
+                options: field["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|option| ProjectFieldOption {
+                        id: option["id"].as_str().unwrap_or_default().to_string(),
+                        name: option["name"].as_str().unwrap_or_default().to_string(),
+                        color: option["color"].as_str().unwrap_or_default().to_string(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let views = node["views"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|view| ProjectView {
+                id: view["id"].as_str().unwrap_or_default().to_string(),
+                name: view["name"].as_str().unwrap_or_default().to_string(),
+                number: view["number"].as_u64().unwrap_or_default(),
+                layout: match view["layout"].as_str() {
+                    Some("BOARD_LAYOUT") => ProjectViewLayout::Board,
+                    Some("ROADMAP_LAYOUT") => ProjectViewLayout::Roadmap,
+                    _ => ProjectViewLayout::Table,
+                },
+                filter: view["filter"].as_str().map(str::to_string),
+                group_by: view["groupByFields"]["nodes"]
+                    .as_array()
+                    .and_then(|nodes| nodes.first())
+                    .and_then(|field| field["id"].as_str())
+                    .map(str::to_string),
+                vertical_group_by: view["verticalGroupByFields"]["nodes"]
+                    .as_array()
+                    .and_then(|nodes| nodes.first())
+                    .and_then(|field| field["id"].as_str())
+                    .map(str::to_string),
+                visible_fields: view["fields"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|field| field["id"].as_str().map(str::to_string))
+                    .collect(),
+            })
+            .collect();
+        let connection = &node["items"];
+        for node in connection["nodes"].as_array().into_iter().flatten() {
+            let content = &node["content"];
+            let kind = match content["__typename"].as_str() {
+                Some("DraftIssue") => ProjectItemKind::DraftIssue,
+                Some("Issue") => ProjectItemKind::Issue,
+                Some("PullRequest") => ProjectItemKind::PullRequest,
+                _ => ProjectItemKind::Redacted,
+            };
+            let repo = content["repository"]["nameWithOwner"]
+                .as_str()
+                .and_then(RepoId::parse);
+            let item_fields: Vec<ProjectFieldValue> = node["fieldValues"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| {
+                    let field_id = value["field"]["id"].as_str()?.to_string();
+                    let field_name = value["field"]["name"].as_str()?.to_string();
+                    let value = match value["__typename"].as_str()? {
+                        "ProjectV2ItemFieldSingleSelectValue" => {
+                            ProjectValue::SingleSelect(value["name"].as_str()?.to_string())
+                        }
+                        "ProjectV2ItemFieldDateValue" => {
+                            ProjectValue::Date(value["date"].as_str()?.to_string())
+                        }
+                        "ProjectV2ItemFieldIterationValue" => ProjectValue::Iteration {
+                            title: value["title"].as_str()?.to_string(),
+                            start_date: value["startDate"].as_str()?.to_string(),
+                            duration: value["duration"].as_u64()?,
+                        },
+                        "ProjectV2ItemFieldTextValue" => {
+                            ProjectValue::Text(value["text"].as_str()?.to_string())
+                        }
+                        "ProjectV2ItemFieldNumberValue" => {
+                            ProjectValue::Number(value["number"].as_f64()?.to_string())
+                        }
+                        "ProjectV2ItemFieldLabelValue" => ProjectValue::Names(
+                            value["labels"]["nodes"]
+                                .as_array()?
+                                .iter()
+                                .filter_map(|node| node["name"].as_str().map(str::to_string))
+                                .collect(),
+                        ),
+                        "ProjectV2ItemFieldMilestoneValue" => ProjectValue::Names(vec![
+                            value["milestone"]["title"].as_str()?.to_string(),
+                        ]),
+                        "ProjectV2ItemFieldUserValue" => ProjectValue::Names(
+                            value["users"]["nodes"]
+                                .as_array()?
+                                .iter()
+                                .filter_map(|node| node["login"].as_str().map(str::to_string))
+                                .collect(),
+                        ),
+                        "ProjectV2ItemFieldRepositoryValue" => ProjectValue::Names(vec![
+                            value["repository"]["nameWithOwner"].as_str()?.to_string(),
+                        ]),
+                        _ => return None,
+                    };
+                    Some(ProjectFieldValue {
+                        field_id,
+                        field_name,
+                        value,
+                    })
+                })
+                .collect();
+            let status = item_fields
+                .iter()
+                .find_map(|field| (field.field_name == "Status").then_some(&field.value))
+                .and_then(|value| match value {
+                    ProjectValue::SingleSelect(name) => Some(name.clone()),
+                    _ => None,
+                });
+            items.push(ProjectItem {
+                id: node["id"].as_str().unwrap_or_default().to_string(),
+                title: content["title"].as_str().unwrap_or_default().to_string(),
+                kind,
+                repo,
+                number: content["number"].as_u64(),
+                state: content["state"].as_str().map(str::to_string),
+                status,
+                fields: item_fields,
+                html_url: content["url"].as_str().map(str::to_string),
+                archived: node["isArchived"].as_bool().unwrap_or(false),
+            });
+        }
+        let next_cursor = connection["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .unwrap_or(false)
+            .then(|| {
+                connection["pageInfo"]["endCursor"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .flatten();
+        Ok(ProjectPage {
+            board: ProjectBoard {
+                project: project.clone(),
+                items,
+                fields,
+                views,
+            },
+            next_cursor,
+        })
+    }
+
+    fn set_project_single_select(
+        &self,
+        project_id: &str,
+        item_id: &str,
+        field_id: &str,
+        option_id: Option<&str>,
+    ) -> Result<()> {
+        let (query, variables) = if let Some(option_id) = option_id {
+            (
+                r#"mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                        projectId: $project, itemId: $item, fieldId: $field,
+                        value: { singleSelectOptionId: $option }
+                    }) { projectV2Item { id } }
+                }"#,
+                serde_json::json!({
+                    "project": project_id,
+                    "item": item_id,
+                    "field": field_id,
+                    "option": option_id,
+                }),
+            )
+        } else {
+            (
+                r#"mutation($project: ID!, $item: ID!, $field: ID!) {
+                    deleteProjectV2ItemFieldValue(input: {
+                        projectId: $project, itemId: $item, fieldId: $field
+                    }) { projectV2Item { id } }
+                }"#,
+                serde_json::json!({
+                    "project": project_id,
+                    "item": item_id,
+                    "field": field_id,
+                }),
+            )
+        };
+        self.graphql(query, variables).map(|_| ())
     }
 
     fn item_projects(&self, repo: &RepoId, number: u64) -> Result<Vec<ProjectMembership>> {
