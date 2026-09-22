@@ -170,6 +170,41 @@ impl Layout {
         })
     }
 
+    /// Shrink open optional columns until the centre and far-right agent fit.
+    ///
+    /// Settings written in a wider window can otherwise restore a panel
+    /// completely beyond the trailing edge. The reading pane gives up space
+    /// first, then the sidebar, while the agent keeps a usable composer.
+    pub fn fit_to_viewport(
+        &mut self,
+        viewport: Pixels,
+        centre_min: Pixels,
+        sidebar_min: Pixels,
+        right_min: Pixels,
+        agent_min: Pixels,
+    ) {
+        let total = Panel::ALL
+            .iter()
+            .copied()
+            .filter(|panel| self.is_open(*panel))
+            .fold(centre_min, |total, panel| total + self.size(panel));
+        let mut excess = (total - viewport).max(px(0.));
+
+        for (panel, floor) in [
+            (Panel::RightPanel, right_min),
+            (Panel::Sidebar, sidebar_min),
+            (Panel::AgentPanel, agent_min),
+        ] {
+            if excess <= px(0.) || !self.is_open(panel) {
+                continue;
+            }
+            let available = (self.size(panel) - floor).max(px(0.));
+            let shrink = excess.min(available);
+            self.set_size(panel, self.size(panel) - shrink);
+            excess -= shrink;
+        }
+    }
+
     /// Resize the sidebar from a drag's starting arrangement.
     ///
     /// The centre gives up space first. Once it reaches its floor, an open
@@ -312,5 +347,23 @@ mod tests {
 
         assert_eq!(layout.size(Panel::Sidebar), px(250.));
         assert_eq!(layout.size(Panel::RightPanel), px(420.));
+    }
+
+    #[test]
+    fn restored_wide_reading_pane_makes_room_for_the_agent() {
+        let settings = AppSettings {
+            sidebar_width: 209.0,
+            right_panel_width: 911.0,
+            agent_panel_open: true,
+            agent_panel_width: 420.0,
+            ..AppSettings::default()
+        };
+        let mut layout = Layout::from_settings(&settings);
+
+        layout.fit_to_viewport(px(1_483.), px(320.), px(200.), px(280.), px(320.));
+
+        assert_eq!(layout.size(Panel::RightPanel), px(534.));
+        assert_eq!(layout.size(Panel::AgentPanel), px(420.));
+        assert!(layout.is_open(Panel::AgentPanel));
     }
 }
