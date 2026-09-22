@@ -1159,6 +1159,17 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let before = self.layout;
+        self.layout.fit_to_viewport(
+            window.viewport_size().width,
+            CENTRE_MIN,
+            px(200.),
+            px(280.),
+            px(320.),
+        );
+        if self.layout != before {
+            self.persist();
+        }
         if self.retheme {
             self.retheme = false;
             // Not here: `Window::refresh` does nothing while the window is
