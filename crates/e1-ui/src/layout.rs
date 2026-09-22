@@ -33,6 +33,19 @@ pub enum Panel {
     AgentPanel,
 }
 
+/// Floors and ceilings applied while the sidebar divider is dragged.
+#[derive(Debug, Clone, Copy)]
+pub struct SidebarResizeLimits {
+    /// The centre column's minimum width.
+    pub centre_min: Pixels,
+    /// The sidebar's minimum width.
+    pub sidebar_min: Pixels,
+    /// The sidebar's maximum width.
+    pub sidebar_max: Pixels,
+    /// The right panel's minimum width.
+    pub right_min: Pixels,
+}
+
 impl Panel {
     /// Every optional panel, in render order.
     pub const ALL: &'static [Panel] = &[Panel::Sidebar, Panel::RightPanel, Panel::AgentPanel];
@@ -156,11 +169,56 @@ impl Layout {
             Panel::AgentPanel => self.agent_width,
         })
     }
+
+    /// Resize the sidebar from a drag's starting arrangement.
+    ///
+    /// The centre gives up space first. Once it reaches its floor, an open
+    /// right panel gives up its remaining space down to its own floor. Using
+    /// the starting arrangement makes reversing the drag restore both widths
+    /// instead of treating the already-shrunk right panel as a new baseline.
+    pub fn resize_sidebar_from(
+        &mut self,
+        start: Self,
+        wanted: Pixels,
+        viewport: Pixels,
+        limits: SidebarResizeLimits,
+    ) {
+        let agent = if start.agent_open {
+            start.size(Panel::AgentPanel)
+        } else {
+            px(0.)
+        };
+        let right_floor = if start.right_open {
+            limits.right_min
+        } else {
+            px(0.)
+        };
+        let room = (viewport - limits.centre_min - agent).max(limits.sidebar_min + right_floor);
+        let sidebar = wanted
+            .max(limits.sidebar_min)
+            .min(limits.sidebar_max)
+            .min(room - right_floor);
+        self.set_size(Panel::Sidebar, sidebar);
+
+        if start.right_open {
+            let right = start
+                .size(Panel::RightPanel)
+                .min((room - sidebar).max(limits.right_min));
+            self.set_size(Panel::RightPanel, right);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RESIZE_LIMITS: SidebarResizeLimits = SidebarResizeLimits {
+        centre_min: px(320.),
+        sidebar_min: px(200.),
+        sidebar_max: px(480.),
+        right_min: px(280.),
+    };
 
     #[test]
     fn round_trips_through_settings() {
@@ -232,5 +290,27 @@ mod tests {
         layout.record_sizes(&layout.columns(), &[px(300.), px(900.)]);
         assert_eq!(layout.size(Panel::Sidebar), px(300.));
         assert_eq!(layout.size(Panel::RightPanel), right);
+    }
+
+    #[test]
+    fn sidebar_takes_the_right_panels_spare_width_after_the_centre_reaches_its_floor() {
+        let mut layout = Layout::from_settings(&AppSettings::default());
+        let start = layout;
+
+        layout.resize_sidebar_from(start, px(350.), px(1_000.), RESIZE_LIMITS);
+
+        assert_eq!(layout.size(Panel::Sidebar), px(350.));
+        assert_eq!(layout.size(Panel::RightPanel), px(330.));
+    }
+
+    #[test]
+    fn reversing_a_sidebar_drag_restores_the_right_panels_starting_width() {
+        let mut layout = Layout::from_settings(&AppSettings::default());
+        let start = layout;
+        layout.resize_sidebar_from(start, px(350.), px(1_000.), RESIZE_LIMITS);
+        layout.resize_sidebar_from(start, px(250.), px(1_000.), RESIZE_LIMITS);
+
+        assert_eq!(layout.size(Panel::Sidebar), px(250.));
+        assert_eq!(layout.size(Panel::RightPanel), px(420.));
     }
 }

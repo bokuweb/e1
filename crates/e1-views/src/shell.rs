@@ -21,7 +21,10 @@ use e1_ui::Mode;
 use e1_ui::palette::Pick;
 use e1_ui::settings::{self, AppSettings, Appearance};
 use e1_ui::theme::ThemeAppearance;
-use e1_ui::{Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, TRAFFIC_LIGHT_INSET, Tokens};
+use e1_ui::{
+    Focus, HEADER_HEIGHT, Layout, Panel, Paths, RepoTab, SidebarResizeLimits, TRAFFIC_LIGHT_INSET,
+    Tokens,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::tooltip::Tooltip;
@@ -49,8 +52,9 @@ struct ColumnDrag {
     panel: Panel,
     /// Where the press was.
     start_x: Pixels,
-    /// How wide the column was at the press.
-    start_width: Pixels,
+    /// The arrangement at the press, used to restore coupled widths when a
+    /// drag reverses direction.
+    start_layout: Layout,
 }
 
 /// A column on its way open or closed.
@@ -168,6 +172,7 @@ impl Shell {
         subscriptions.push(
             cx.subscribe(&detail, move |this, _, event, cx| match event {
                 DetailEvent::Ask(ask) => {
+                    tracing::info!("opening agent pane from Ask AI");
                     agent_for_ask.update(cx, |agent, cx| agent.open(ask.clone(), cx));
                     if !this.layout.is_open(Panel::AgentPanel) {
                         this.toggle(Panel::AgentPanel, cx);
@@ -652,7 +657,7 @@ impl Shell {
         self.resizing = Some(ColumnDrag {
             panel,
             start_x: at,
-            start_width: self.layout.size(panel),
+            start_layout: self.layout,
         });
         cx.notify();
     }
@@ -666,12 +671,31 @@ impl Shell {
         // The sidebar's divider is on its right, so the column grows with
         // `x`; the right panel's is on its left, so it shrinks.
         let wanted = match drag.panel {
-            Panel::Sidebar => drag.start_width + delta,
-            Panel::RightPanel | Panel::AgentPanel => drag.start_width - delta,
+            Panel::Sidebar => drag.start_layout.size(drag.panel) + delta,
+            Panel::RightPanel | Panel::AgentPanel => drag.start_layout.size(drag.panel) - delta,
         };
         // The sidebar has a ceiling of its own; the right panel may take
         // whatever the centre's floor leaves it, because reading a diff
         // is what a wide right panel is for.
+        if drag.panel == Panel::Sidebar {
+            let before = self.layout;
+            self.layout.resize_sidebar_from(
+                drag.start_layout,
+                wanted,
+                window.viewport_size().width,
+                SidebarResizeLimits {
+                    centre_min: CENTRE_MIN,
+                    sidebar_min: px(200.),
+                    sidebar_max: px(480.),
+                    right_min: px(280.),
+                },
+            );
+            if self.layout != before {
+                cx.notify();
+            }
+            return;
+        }
+
         let (min, max) = match drag.panel {
             Panel::Sidebar => (px(200.), px(480.)),
             Panel::RightPanel => (px(280.), Pixels::MAX),
