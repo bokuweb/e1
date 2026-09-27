@@ -1,8 +1,9 @@
 # Releasing e1
 
-> Status: implementation in progress; local ad-hoc universal bundles exist,
-> but there is no public release pipeline yet.
-> Last updated: 2026-09-13
+> Status: implementation in progress. A published GitHub Release now triggers
+> a signed, notarized workflow artifact. Draft release assets, the signed
+> appcast and R2 synchronization are still pending.
+> Last updated: 2026-09-27
 
 This document defines the release contract for the standalone macOS app. The
 views embedded in Ginka remain Rust library crates and are not distributed on
@@ -277,6 +278,27 @@ Apple's bundle version fields are more restrictive than Cargo SemVer. Do not
 invent a mapping inside the workflow.
 
 ## 7. Automated release jobs
+
+### Current artifact workflow
+
+`.github/workflows/release-artifact.yml` runs when a GitHub Release is
+published. It checks that the release tag matches the root Cargo version,
+builds both macOS architectures, signs the app, notarizes and staples the app
+and DMG, then uploads the final DMG, ZIP and checksums as one Actions artifact.
+It does not attach assets to the Release or generate an appcast. This is the
+interim signed artifact path; the tag-driven draft and publish-triggered R2
+jobs described below remain to be implemented.
+
+Configure Actions secrets `MACOS_CERTIFICATE_P12_BASE64`,
+`MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID` and
+`APPLE_APP_SPECIFIC_PASSWORD`, plus repository variables
+`E1_SPARKLE_FEED_URL` and `E1_SPARKLE_PUBLIC_KEY`. The latter must be the
+real HTTPS feed URL and matching Sparkle public key; the package script
+rejects missing values. The local `ccs-notarization` keychain profile is not
+available on a GitHub runner. The GitHub Release tag must be `v` followed by
+the root Cargo version.
+
+### Planned publication workflow
 
 Add `.github/workflows/release.yml`, triggered only by `v*` tag pushes and also
 available as a dry-run `workflow_dispatch` that cannot access release secrets.
