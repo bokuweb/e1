@@ -4353,7 +4353,7 @@ impl Detail {
                 }
             },
             (None, Some(error), _) => self.notice(error, true, cx),
-            (None, None, true) => crate::skeleton::list_rows(7, cx),
+            (None, None, true) => crate::skeleton::project_rows(7, cx),
             (None, None, false) => {
                 self.notice(rust_i18n::t!("project.items.empty").to_string(), false, cx)
             }

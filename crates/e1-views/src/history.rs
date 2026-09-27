@@ -316,7 +316,7 @@ impl Render for History {
                 .size_full()
                 .child(match error {
                     Some(error) => self.notice(error, true, cx),
-                    None if loading => crate::skeleton::path_rows(10, cx),
+                    None if loading => crate::skeleton::history_rows(10, cx),
                     None => self.notice(rust_i18n::t!("history.empty").to_string(), false, cx),
                 })
                 .into_any_element();
