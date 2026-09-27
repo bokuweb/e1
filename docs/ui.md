@@ -141,6 +141,7 @@ system applications instead of presenting as a full-bleed square.
 | Region | Component |
 | --- | --- |
 | Window shell | `gpui-component` `Root`, our header strips |
+| Sidebar section headings | `bgpui-kit::section_label`, using e1's active theme tokens |
 | Columns | ours: three core flex children plus the optional far-right agent child, with explicit widths, a 9 px grab area centred on each divider, and the drag tracked at the window root |
 | List | `gpui::uniform_list` with rows from `e1_ui::rows::ItemRow` |
 | Palette | `gpui-component` `Command` in a `Dialog`, over rows from `e1_ui::palette` |
