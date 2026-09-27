@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           version=$(awk '/^\[package\]$/ { package = 1; next } /^\[/ { package = 0 } package && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
-          test "$RELEASE_TAG" = "v$version"
+          test "$RELEASE_TAG" = "$version" || test "$RELEASE_TAG" = "v$version"
 
       - name: Import Developer ID certificate
         env:
@@ -103,6 +103,19 @@ jobs:
             target/dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
+
+      - name: Attach signed artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          gh release upload "$RELEASE_TAG" \
+            "target/dist/e1-v$version-macos-universal.dmg" \
+            "target/dist/e1-v$version-macos-universal.zip" \
+            target/dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
       - name: Remove temporary signing keychain
         if: always()
