@@ -1,8 +1,8 @@
 # Releasing e1
 
-> Status: implementation in progress. A published GitHub Release now triggers
-> a signed, notarized workflow artifact. Draft release assets, the signed
-> appcast and R2 synchronization are still pending.
+> Status: implementation in progress. A published GitHub Release triggers a
+> signed, notarized build that attaches the DMG, ZIP and checksums to the
+> release. The signed appcast and R2 synchronization are still pending.
 > Last updated: 2026-09-27
 
 This document defines the release contract for the standalone macOS app. The
@@ -284,9 +284,9 @@ invent a mapping inside the workflow.
 `.github/workflows/release-artifact.yml` runs when a GitHub Release is
 published. It checks that the release tag matches the root Cargo version,
 builds both macOS architectures, signs the app, notarizes and staples the app
-and DMG, then uploads the final DMG, ZIP and checksums as one Actions artifact.
-It does not attach assets to the Release or generate an appcast. This is the
-interim signed artifact path; the tag-driven draft and publish-triggered R2
+and DMG, then uploads the final DMG, ZIP and checksums as one Actions artifact
+and attaches each file to the GitHub Release. It does not generate an appcast.
+This is the interim signed artifact path; the tag-driven draft and publish-triggered R2
 jobs described below remain to be implemented.
 
 Configure Actions secrets `MACOS_CERTIFICATE_P12_BASE64`,
@@ -295,8 +295,8 @@ Configure Actions secrets `MACOS_CERTIFICATE_P12_BASE64`,
 `E1_SPARKLE_FEED_URL` and `E1_SPARKLE_PUBLIC_KEY`. The latter must be the
 real HTTPS feed URL and matching Sparkle public key; the package script
 rejects missing values. The local `ccs-notarization` keychain profile is not
-available on a GitHub runner. The GitHub Release tag must be `v` followed by
-the root Cargo version.
+available on a GitHub runner. The GitHub Release tag may be the root Cargo
+version with or without a leading `v`; it must otherwise match exactly.
 
 ### Planned publication workflow
 
