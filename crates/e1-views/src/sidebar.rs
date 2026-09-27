@@ -165,14 +165,7 @@ impl Sidebar {
     /// A small muted label over a run of rows.
     fn section_label(&self, label: String, cx: &App) -> impl IntoElement + use<> {
         let tokens = Tokens::global(cx);
-        div()
-            .w_full()
-            .px_3()
-            .pt_3()
-            .pb_1()
-            .text_size(px(11.5))
-            .text_color(tokens.colors().text_muted)
-            .child(label)
+        bgpui_kit::section_label(label, &tokens.as_shared()).text_size(px(11.5))
     }
 
     /// One of the four fixed rows.

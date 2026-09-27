@@ -24,6 +24,7 @@ e1-github = { path = "crates/e1-github" }
 e1-updater-macos = { path = "crates/e1-updater-macos" }
 e1-ui = { path = "crates/e1-ui" }
 e1-views = { path = "crates/e1-views" }
+bgpui-kit = { git = "https://github.com/bokuweb/bgpui-kit", rev = "4b1d692e3eccb092937b7176ce5dc56a53b6bb92" }
 
 # GPUI arrives transitively through gpui-component: the component library owns
 # the rev, and pinning it independently guarantees a conflict on the next

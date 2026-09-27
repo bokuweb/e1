@@ -193,6 +193,49 @@ impl Durations {
 }
 
 impl Tokens {
+    /// Copy the active app palette into the shared component contract.
+    ///
+    /// This preserves host-installed themes when these views are embedded.
+    pub fn as_shared(&self) -> bgpui_kit::ThemeTokens {
+        bgpui_kit::ThemeTokens {
+            name: self.name.clone(),
+            appearance: match self.appearance {
+                ThemeAppearance::Light => "light",
+                ThemeAppearance::Dark => "dark",
+            }
+            .to_owned(),
+            colors: bgpui_kit::Colors {
+                bg_window: self.colors.bg_window,
+                bg_sidebar: self.colors.bg_sidebar,
+                bg_surface: self.colors.bg_surface,
+                bg_raised: self.colors.bg_raised,
+                bg_terminal: self.colors.bg_terminal,
+                border_subtle: self.colors.border_subtle,
+                border_strong: self.colors.border_strong,
+                text_primary: self.colors.text_primary,
+                text_secondary: self.colors.text_secondary,
+                text_muted: self.colors.text_muted,
+                accent: self.colors.accent,
+                status_working: self.colors.status_working,
+                status_attention: self.colors.status_attention,
+                status_done: self.colors.status_done,
+                status_error: self.colors.status_error,
+                code_bg: self.colors.code_bg,
+            },
+            radius: bgpui_kit::Radii {
+                window: self.radius.window,
+                card: self.radius.card,
+                panel: self.radius.panel,
+                row: self.radius.row,
+            },
+            duration_ms: bgpui_kit::Durations {
+                quick: self.duration_ms.quick,
+                standard: self.duration_ms.standard,
+                fade: Some(self.duration_ms.fade),
+            },
+        }
+    }
+
     /// The built-in theme for a mode.
     pub fn load(mode: Mode) -> Self {
         let source = match mode {

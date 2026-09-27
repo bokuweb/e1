@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Design tokens, assets, settings and view models: everything UI-side that is testable without a window"
 
 [dependencies]
+bgpui-kit.workspace = true
 e1-github.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

@@ -6,6 +6,7 @@ publish.workspace = true
 description = "The GPUI views: the shell, the sidebar, the item list and the detail panel, as a library a host window can mount"
 
 [dependencies]
+bgpui-kit.workspace = true
 e1-github.workspace = true
 e1-ui.workspace = true
 anyhow.workspace = true
