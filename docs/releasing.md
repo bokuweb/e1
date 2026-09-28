@@ -5,6 +5,16 @@
 > release. The signed appcast and R2 synchronization are still pending.
 > Last updated: 2026-09-27
 
+The current `.github/workflows/release-artifact.yml` runs when a GitHub Release
+is published for the version in `Cargo.toml` (`X.Y.Z` or `vX.Y.Z`). It requires
+the repository Actions secrets `MACOS_CERTIFICATE_P12_BASE64`,
+`MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`.
+The optional repository variables `E1_SPARKLE_FEED_URL` and
+`E1_SPARKLE_PUBLIC_KEY` must both be set to include the updater. The workflow
+uploads the ZIP, DMG, and checksums only after both notarization submissions
+return `Accepted` and stapling succeeds. The appcast and R2 steps below remain
+planned work.
+
 This document defines the release contract for the standalone macOS app. The
 views embedded in Ginka remain Rust library crates and are not distributed on
 their own.
